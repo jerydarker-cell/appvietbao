@@ -115,7 +115,7 @@ def security_check_rows() -> list[dict[str, Any]]:
 
 def make_backup_payload(store: Any) -> dict[str, Any]:
     return {
-        "app": "Beat Nghệ An AutoPost Pro v9 Secure Ops",
+        "app": "Beat Nghệ An AutoPost Pro v10 Hotfix",
         "posts": store.export_posts(),
         "sources": store.list_sources(include_disabled=True),
         "articles": store.list_articles(min_score=0, limit=5000, include_drafted=True),

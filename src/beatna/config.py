@@ -102,4 +102,4 @@ def max_post_chars() -> int:
 
 
 def app_version() -> str:
-    return "v9 Secure Ops"
+    return "v11 OAuth Connect"

@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import sys
+import secrets as pysecrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -27,7 +28,7 @@ from beatna.automation import (
 from beatna.composer import make_ai_post, make_rule_based_post
 from beatna.config import app_timezone, app_version, as_bool, as_int, dry_run_mode, rss_sources, secret
 from beatna.chatgpt_bridge import ImportedChatItem, imported_to_article, parse_chatgpt_export_bytes, parse_chatgpt_hourly_text, table_rows
-from beatna.facebook import clear_session_credentials, create_feed_post, create_first_comment, create_photo_post, credential_source, debug_token, delete_post, get_scheduled_posts, mask_token, page_status_report, set_session_credentials, test_connection, test_connection_with_credentials
+from beatna.facebook import clear_session_credentials, create_feed_post, create_first_comment, create_photo_post, credential_source, debug_token, delete_post, get_pages_from_user_token, get_scheduled_posts, mask_token, oauth_configured, oauth_missing_items, build_oauth_login_url, exchange_code_for_user_token, exchange_long_lived_user_token, page_status_report, set_session_credentials, test_connection, test_connection_with_credentials
 from beatna.health import health_rows, health_summary, run_health_checks
 from beatna.safety import check_post_safety
 from beatna.scheduler import check_schedule_time, default_slots, human_delta_from_now, iso_to_local_text
@@ -41,7 +42,7 @@ except Exception:  # pragma: no cover
     st_autorefresh = None
 
 TZ = ZoneInfo(app_timezone())
-st.set_page_config(page_title="Beat Nghệ An AutoPost Pro v9 Secure Ops", page_icon="📰", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Beat Nghệ An AutoPost Pro v11 OAuth Connect", page_icon="📰", layout="wide", initial_sidebar_state="expanded")
 store = get_store()
 
 
@@ -65,18 +66,23 @@ def clean_status(status: str | None) -> str:
 
 
 def require_login() -> bool:
-    # v9 supports role passwords. Legacy APP_PASSWORD still works as admin.
+    # v10 supports role passwords. Legacy APP_PASSWORD still works as admin.
     has_login_secret = any(str(secret(k, "") or "") or str(secret(f"{k}_SHA256", "") or "") for k in ["ADMIN_PASSWORD", "EDITOR_PASSWORD", "VIEWER_PASSWORD", "APP_PASSWORD"])
     if not has_login_secret:
-        st.warning("Chưa đặt mật khẩu. App đang chạy demo; ai có link đều có thể vào.")
-        st.session_state.setdefault("role", "demo")
-        return True
+        if as_bool(secret("ALLOW_DEMO_MODE", False), False):
+            st.warning("ALLOW_DEMO_MODE đang bật. App chạy demo; ai có link đều có thể vào.")
+            st.session_state.setdefault("role", "demo")
+            return True
+        st.error("App chưa đặt mật khẩu nên đã tự khóa để an toàn.")
+        st.info("Vào Streamlit Cloud → Manage app → Settings → Secrets, thêm ADMIN_PASSWORD hoặc APP_PASSWORD rồi reboot app.")
+        st.code('ADMIN_PASSWORD = "mat-khau-admin-cua-ban"\nPAGE_CONNECT_PASSWORD = "mat-khau-rieng-ket-noi-page"', language="toml")
+        return False
     if st.session_state.get("authed"):
         return True
-    st.title("📰 Beat Nghệ An AutoPost Pro v9 Secure Ops")
+    st.title("📰 Beat Nghệ An AutoPost Pro v11 OAuth Connect")
     st.caption("App riêng để nhập tin ChatGPT Hourly, quét RSS, soạn bài, kiểm tra rủi ro, lên lịch và đăng Facebook Page an toàn hơn.")
-    pw = st.text_input("Mật khẩu app", type="password")
-    if st.button("Đăng nhập", type="primary"):
+    pw = st.text_input("Mật khẩu app", type="password", key="auth_password_v10")
+    if st.button("Đăng nhập", type="primary", key="auth_login_btn_v10"):
         role = login_role(pw)
         if role != "none":
             st.session_state["authed"] = True
@@ -252,7 +258,7 @@ if not require_login():
     st.stop()
 
 with st.sidebar:
-    st.markdown("### ⚙️ Beat Nghệ An v9 Secure Ops")
+    st.markdown("### ⚙️ Beat Nghệ An v11 OAuth Connect")
     st.write("Kho dữ liệu:", f"**{store.backend_name}**")
     warn = storage_warning()
     if warn:
@@ -266,21 +272,21 @@ with st.sidebar:
     st.write("AI:", "✅" if secret("OPENAI_API_KEY", "") else "Tắt")
     st.write("Timezone:", app_timezone())
     st.divider()
-    auto_worker = st.toggle("Tự xử lý lịch khi app đang mở", value=as_bool(secret("AUTO_WORKER_DEFAULT", True), True))
+    auto_worker = st.toggle("Tự xử lý lịch khi app đang mở", value=as_bool(secret("AUTO_WORKER_DEFAULT", True), True), key="sidebar_auto_worker_v10")
     refresh_seconds = max(as_int("AUTO_REFRESH_SECONDS", 90), 45)
     if auto_worker and st_autorefresh:
-        st_autorefresh(interval=refresh_seconds * 1000, key="queue_autorefresh_v9")
+        st_autorefresh(interval=refresh_seconds * 1000, key="queue_autorefresh_v10")
         results = publish_due_posts(store, limit=as_int("WORKER_BATCH_LIMIT", 5))
         if results:
             ok = sum(1 for x in results if x.get("ok"))
             st.toast(f"Đã xử lý lịch: {ok}/{len(results)} bài thành công")
     elif auto_worker:
         st.caption("Chưa cài streamlit-autorefresh; dùng nút xử lý lịch hoặc GitHub Actions worker.")
-    if st.button("Đăng xuất"):
+    if st.button("Đăng xuất", key="sidebar_logout_v10"):
         st.session_state.pop("authed", None); st.rerun()
 
-st.title("📰 Beat Nghệ An AutoPost Pro v9 Secure Ops")
-st.caption("Quét RSS → chống trùng tin → tự soạn nháp → kiểm tra chất lượng → lên calendar → hẹn giờ Facebook/Page hoặc hàng đợi nội bộ.")
+st.title("📰 Beat Nghệ An AutoPost Pro v11 OAuth Connect")
+st.caption("Quét RSS → chống trùng tin → tự soạn nháp → kiểm tra chất lượng → lên calendar → kết nối Facebook OAuth → hẹn giờ Facebook/Page hoặc hàng đợi nội bộ.")
 
 tab_home, tab_chatgpt, tab_hot, tab_compose, tab_schedule, tab_plan, tab_posts, tab_sources, tab_connect, tab_ops, tab_settings = st.tabs([
     "Tổng quan",
@@ -313,7 +319,7 @@ with tab_home:
         due = store.list_due_posts(utc_now_iso(), limit=10)
         if due:
             st.warning(f"Có {len(due)} bài nội bộ đã đến giờ/chờ retry.")
-            st.dataframe(post_row_table(due), use_container_width=True, hide_index=True)
+            st.dataframe(post_row_table(due), use_container_width=True, hide_index=True, key="df_home_due_posts_v10")
             if st.button("Xử lý ngay bài đến giờ", type="primary", key="home_process_due"):
                 st.write(publish_due_posts(store, limit=10)); st.rerun()
         else:
@@ -332,25 +338,25 @@ with tab_chatgpt:
     st.subheader("🤝 Nhập tin từ ChatGPT / Beat Nghệ An Hourly")
     st.info("App không đọc trực tiếp lịch sử ChatGPT riêng tư của bạn. Cách ổn định nhất là copy nội dung từ đoạn chat Beat Nghệ An Hourly dán vào đây, hoặc tải file export ChatGPT rồi upload. App sẽ tự tách link nguồn, tiêu đề, bài đã soạn, bình luận nguồn và tạo nháp/sẵn sàng.")
 
-    import_mode = st.radio("Cách nhập", ["Dán nội dung từ đoạn chat", "Upload export ChatGPT / file txt-json-zip"], horizontal=True)
+    import_mode = st.radio("Cách nhập", ["Dán nội dung từ đoạn chat", "Upload export ChatGPT / file txt-json-zip"], horizontal=True, key="chatgpt_import_mode_v10")
     title_filter = "Beat Nghệ An"
     raw_text = ""
     uploaded = None
     if import_mode == "Dán nội dung từ đoạn chat":
-        raw_text = st.text_area("Dán nguyên đoạn trả lời từ Beat Nghệ An Hourly", height=300, placeholder="Dán các bài/tin có link nguồn ở đây...\nVí dụ: tiêu đề, nội dung bài đăng, bình luận nguồn, link báo")
+        raw_text = st.text_area("Dán nguyên đoạn trả lời từ Beat Nghệ An Hourly", height=300, placeholder="Dán các bài/tin có link nguồn ở đây...\nVí dụ: tiêu đề, nội dung bài đăng, bình luận nguồn, link báo", key="chatgpt_raw_text_v10")
     else:
         c1, c2 = st.columns([1, 1])
-        uploaded = c1.file_uploader("Upload file .txt, .json hoặc .zip export từ ChatGPT", type=["txt", "json", "zip"])
-        title_filter = c2.text_input("Lọc tên cuộc chat khi đọc export", value="Beat Nghệ An")
+        uploaded = c1.file_uploader("Upload file .txt, .json hoặc .zip export từ ChatGPT", type=["txt", "json", "zip"], key="chatgpt_export_file_v10")
+        title_filter = c2.text_input("Lọc tên cuộc chat khi đọc export", value="Beat Nghệ An", key="chatgpt_title_filter_v10")
         st.caption("Với file export ChatGPT, app sẽ tìm conversations.json và ưu tiên các cuộc chat có tiêu đề chứa cụm lọc này.")
 
     p1, p2, p3, p4 = st.columns([1, 1, 1, 1])
-    max_items = p1.slider("Tối đa số tin tách", 5, 100, 40)
-    min_conf = p2.slider("Độ tin cậy tối thiểu", 40, 100, 60)
-    use_ai_import = p3.toggle("Khi cần thì dùng AI viết lại", value=bool(secret("OPENAI_API_KEY", "")))
-    default_status = p4.selectbox("Trạng thái khi nhập", ["draft", "ready"], format_func=lambda x: "Nháp" if x == "draft" else "Sẵn sàng")
+    max_items = p1.slider("Tối đa số tin tách", 5, 100, 40, key="chatgpt_max_items_v10")
+    min_conf = p2.slider("Độ tin cậy tối thiểu", 40, 100, 60, key="chatgpt_min_conf_v10")
+    use_ai_import = p3.toggle("Khi cần thì dùng AI viết lại", value=bool(secret("OPENAI_API_KEY", "")), key="chatgpt_use_ai_import_v10")
+    default_status = p4.selectbox("Trạng thái khi nhập", ["draft", "ready"], format_func=lambda x: "Nháp" if x == "draft" else "Sẵn sàng", key="chatgpt_default_status_v10")
 
-    if st.button("Phân tích nội dung ChatGPT", type="primary"):
+    if st.button("Phân tích nội dung ChatGPT", type="primary", key="chatgpt_parse_btn_v10"):
         try:
             if import_mode == "Dán nội dung từ đoạn chat":
                 items = parse_chatgpt_hourly_text(raw_text, max_items=max_items)
@@ -369,14 +375,14 @@ with tab_chatgpt:
     import_items = st.session_state.get("chatgpt_import_items", [])
     if import_items:
         st.markdown("#### Tin đã tách từ ChatGPT")
-        st.dataframe(pd.DataFrame(table_rows(import_items)), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(table_rows(import_items)), use_container_width=True, hide_index=True, key="df_chatgpt_items_v10")
         labels = [f"{i+1}. {x.get('title') or '(không tiêu đề)'} | {x.get('source_url')}" for i, x in enumerate(import_items)]
-        selected_labels = st.multiselect("Chọn tin muốn nhập", labels, default=labels[:min(5, len(labels))])
+        selected_labels = st.multiselect("Chọn tin muốn nhập", labels, default=labels[:min(5, len(labels))], key="chatgpt_selected_labels_v10")
         selected_idx = [labels.index(x) for x in selected_labels]
         selected_items = [import_items[i] for i in selected_idx]
 
         col_a, col_b, col_c, col_d = st.columns(4)
-        if col_a.button("Đưa 1 tin sang tab Soạn", disabled=not bool(selected_items)):
+        if col_a.button("Đưa 1 tin sang tab Soạn", disabled=not bool(selected_items), key="chatgpt_send_compose_v10"):
             item = ImportedChatItem(**selected_items[0])
             article = imported_to_article(item)
             put_article_to_state(article)
@@ -385,7 +391,7 @@ with tab_chatgpt:
             st.session_state["image_note"] = item.image_note
             st.success("Đã đưa tin đầu tiên sang tab Soạn & đăng.")
 
-        if col_b.button("Chỉ lưu cache tin", disabled=not bool(selected_items)):
+        if col_b.button("Chỉ lưu cache tin", disabled=not bool(selected_items), key="chatgpt_save_cache_v10"):
             done = 0
             for raw in selected_items:
                 item = ImportedChatItem(**raw)
@@ -396,7 +402,7 @@ with tab_chatgpt:
             st.success(f"Đã lưu cache {done} tin.")
             st.rerun()
 
-        if col_c.button("Tạo nháp từ tin đã chọn", disabled=not bool(selected_items)):
+        if col_c.button("Tạo nháp từ tin đã chọn", disabled=not bool(selected_items), key="chatgpt_create_drafts_v10"):
             done, reused = 0, 0
             for raw in selected_items:
                 item = ImportedChatItem(**raw)
@@ -436,7 +442,7 @@ with tab_chatgpt:
             st.success(f"Đã tạo {done} nháp. Bỏ qua {reused} tin đã có trong kho.")
             st.rerun()
 
-        if col_d.button("Tạo bài Sẵn sàng", disabled=not bool(selected_items)):
+        if col_d.button("Tạo bài Sẵn sàng", disabled=not bool(selected_items), key="chatgpt_create_ready_v10"):
             done, reused = 0, 0
             for raw in selected_items:
                 item = ImportedChatItem(**raw)
@@ -482,9 +488,9 @@ with tab_chatgpt:
                 item = ImportedChatItem(**selected_items[0])
                 st.markdown("**Tiêu đề:** " + item.title)
                 st.code(item.source_url, language=None)
-                st.text_area("Bài đăng", value=item.post_text, height=220, disabled=True)
-                st.text_area("Bình luận nguồn", value=item.first_comment or f"Nguồn: {item.source_url}", height=80, disabled=True)
-                st.text_area("Gợi ý ảnh/link", value=item.image_note, height=80, disabled=True)
+                st.text_area("Bài đăng", value=item.post_text, height=220, disabled=True, key="chatgpt_preview_post_text_v10")
+                st.text_area("Bình luận nguồn", value=item.first_comment or f"Nguồn: {item.source_url}", height=80, disabled=True, key="chatgpt_preview_first_comment_v10")
+                st.text_area("Gợi ý ảnh/link", value=item.image_note, height=80, disabled=True, key="chatgpt_preview_image_note_v10")
     else:
         st.caption("Chưa có dữ liệu. Dán nội dung Beat Nghệ An Hourly hoặc upload file export rồi bấm Phân tích.")
 
@@ -499,23 +505,23 @@ with tab_hot:
     st.subheader("🔥 Tin hot & Auto-draft")
     urls = active_feed_urls()
     h1, h2, h3, h4 = st.columns([1, 1, 1, 1])
-    per_feed = h1.slider("Số tin mỗi nguồn", 5, 40, 15)
-    min_score = h2.slider("Điểm hot tối thiểu", 0, 100, 20)
-    include_drafted = h3.toggle("Hiện cả tin đã soạn", value=False)
-    use_ai_auto = h4.toggle("Auto-draft dùng AI", value=bool(secret("OPENAI_API_KEY", "")))
+    per_feed = h1.slider("Số tin mỗi nguồn", 5, 40, 15, key="hot_per_feed_v10")
+    min_score = h2.slider("Điểm hot tối thiểu", 0, 100, 20, key="hot_min_score_v10")
+    include_drafted = h3.toggle("Hiện cả tin đã soạn", value=False, key="hot_include_drafted_v10")
+    use_ai_auto = h4.toggle("Auto-draft dùng AI", value=bool(secret("OPENAI_API_KEY", "")), key="hot_use_ai_auto_v10")
 
     b1, b2, b3 = st.columns([1, 1, 1])
-    if b1.button("Quét RSS và lưu Supabase", type="primary", disabled=not urls):
+    if b1.button("Quét RSS và lưu Supabase", type="primary", disabled=not urls, key="hot_scan_save_v10"):
         with st.spinner("Đang quét nguồn, chấm điểm và lưu cache..."):
             result = scan_feeds_to_cache(store, urls, per_feed=per_feed)
         st.success(f"Đã lưu {len(result['items'])} tin vào cache.")
         if result["errors"]:
             st.warning("Một số nguồn lỗi. Xem log/cảnh báo bên dưới.")
-    if b2.button("Quét live không lưu", disabled=not urls):
+    if b2.button("Quét live không lưu", disabled=not urls, key="hot_scan_live_v10"):
         items, errors = load_hot_news_live(urls, per_feed=per_feed)
         st.session_state["hot_live_items"] = [x.to_dict() for x in items]
         st.session_state["hot_live_errors"] = errors
-    if b3.button("Auto-draft 5 tin hot", type="secondary"):
+    if b3.button("Auto-draft 5 tin hot", type="secondary", key="hot_auto_draft_v10"):
         ids = auto_draft_hot_articles(store, min_score=min_score, limit=5, status="draft", use_ai=use_ai_auto)
         st.success(f"Đã tạo/nhận diện {len(ids)} nháp. Có chống trùng theo content_hash.")
         st.rerun()
@@ -523,20 +529,20 @@ with tab_hot:
     cached_rows = store.list_articles(min_score=min_score, limit=150, include_drafted=include_drafted)
     if cached_rows:
         st.markdown("#### Tin đã cache trong Supabase/SQLite")
-        st.dataframe(article_table(cached_rows), use_container_width=True, hide_index=True)
+        st.dataframe(article_table(cached_rows), use_container_width=True, hide_index=True, key="df_cached_articles_v10")
         labels = [f"{r.get('score')}/100 | {r.get('title') or '(không tiêu đề)'} | {r.get('content_hash')}" for r in cached_rows]
-        selected_label = st.selectbox("Chọn tin để xử lý nhanh", labels)
+        selected_label = st.selectbox("Chọn tin để xử lý nhanh", labels, key="hot_selected_article_v10")
         row = cached_rows[labels.index(selected_label)]
         article = article_row_to_info(row)
         st.write(article.description or "Không có mô tả RSS.")
         st.code(article.url, language=None)
         a, b, c = st.columns(3)
-        if a.button("Đưa sang tab Soạn"):
+        if a.button("Đưa sang tab Soạn", key="hot_to_compose_v10"):
             put_article_to_state(article); st.success("Đã đưa tin sang tab Soạn & đăng.")
-        if b.button("Tạo nháp từ tin này"):
+        if b.button("Tạo nháp từ tin này", key="hot_create_draft_this_v10"):
             pid = create_post_from_article(store, article, status="draft", use_ai=use_ai_auto)
             st.success(f"Đã tạo/nhận diện nháp: {pid}")
-        if c.button("Tạo bài Sẵn sàng"):
+        if c.button("Tạo bài Sẵn sàng", key="hot_create_ready_this_v10"):
             pid = create_post_from_article(store, article, status="ready", use_ai=use_ai_auto)
             st.success(f"Đã tạo/nhận diện bài sẵn sàng: {pid}")
     else:
@@ -549,12 +555,12 @@ with tab_hot:
     live_items = [ArticleInfo(**x) for x in st.session_state.get("hot_live_items", []) if int(x.get("score") or 0) >= min_score]
     if live_items:
         st.markdown("#### Kết quả quét live")
-        st.dataframe(article_table([{"score": x.score, "sensitivity": x.sensitivity, "status": "live", "title": x.title, "source_name": x.source_name, "published_at": x.published_at, "reason": x.reason, "url": x.url} for x in live_items]), use_container_width=True, hide_index=True)
+        st.dataframe(article_table([{"score": x.score, "sensitivity": x.sensitivity, "status": "live", "title": x.title, "source_name": x.source_name, "published_at": x.published_at, "reason": x.reason, "url": x.url} for x in live_items]), use_container_width=True, hide_index=True, key="df_live_items_v10")
 
 with tab_compose:
     st.subheader("✍️ Soạn & đăng bài")
     with st.form("fetch_link_form"):
-        link_to_fetch = st.text_input("Dán link báo để lấy metadata", value=st.session_state.get("fetch_url", ""))
+        link_to_fetch = st.text_input("Dán link báo để lấy metadata", value=st.session_state.get("fetch_url", ""), key="compose_fetch_url_v10")
         f1, f2 = st.columns([1, 4])
         fetch_btn = f1.form_submit_button("Lấy tin", type="primary")
         clear_btn = f2.form_submit_button("Xóa form")
@@ -579,10 +585,10 @@ with tab_compose:
         st.text_input("Ảnh nguồn / og:image nếu có", key="manual_image")
         st.caption(f"Điểm hot: {st.session_state.get('manual_score', 0)} — {st.session_state.get('manual_reason', '')} — Nhạy cảm: {st.session_state.get('manual_sensitivity', 'normal')}")
     with right:
-        tone = st.selectbox("Giọng bài", ["Tin nhanh", "Cảnh báo / dân sinh", "Nhẹ nhàng cộng đồng", "Hyperlocal xã/phường", "Thể thao / giải trí"])
-        local_angle = st.text_input("Góc địa phương muốn nhấn", placeholder="Ví dụ: bà con Vinh/Cửa Lò/Nam Đàn cần chú ý...")
-        use_ai = st.toggle("Dùng AI nếu có API key", value=bool(secret("OPENAI_API_KEY", "")))
-        if st.button("Tạo bài đăng", type="primary"):
+        tone = st.selectbox("Giọng bài", ["Tin nhanh", "Cảnh báo / dân sinh", "Nhẹ nhàng cộng đồng", "Hyperlocal xã/phường", "Thể thao / giải trí"], key="compose_tone_v10")
+        local_angle = st.text_input("Góc địa phương muốn nhấn", placeholder="Ví dụ: bà con Vinh/Cửa Lò/Nam Đàn cần chú ý...", key="compose_local_angle_v10")
+        use_ai = st.toggle("Dùng AI nếu có API key", value=bool(secret("OPENAI_API_KEY", "")), key="compose_use_ai_v10")
+        if st.button("Tạo bài đăng", type="primary", key="compose_generate_btn_v10"):
             article = article_from_state()
             result = generate_post(article, tone, use_ai=use_ai, local_angle=local_angle)
             put_generated_to_state(result); st.success("Đã tạo bài. Hãy đọc lại rồi đăng/hẹn giờ.")
@@ -597,11 +603,11 @@ with tab_compose:
 
     st.divider(); st.markdown("#### Lưu, đăng ngay hoặc hẹn giờ")
     a, b, c, d = st.columns(4)
-    if a.button("Lưu nháp"):
+    if a.button("Lưu nháp", key="compose_save_draft_v10"):
         pid = save_current_post("draft"); store.add_log(pid, "save_draft", True, "Lưu nháp từ form soạn"); st.success(f"Đã lưu nháp: {pid}")
-    if b.button("Lưu sẵn sàng"):
+    if b.button("Lưu sẵn sàng", key="compose_save_ready_v10"):
         pid = save_current_post("ready"); store.add_log(pid, "save_ready", True, "Lưu bài sẵn sàng từ form soạn"); st.success(f"Đã lưu bài sẵn sàng: {pid}")
-    if c.button("Đăng link/text ngay", type="primary"):
+    if c.button("Đăng link/text ngay", type="primary", key="compose_publish_now_v10"):
         try:
             fb = create_feed_post(st.session_state.get("post_text", ""), link=article.url or None)
             fb_id = str(fb.get("id") or ""); comment_id = ""
@@ -615,8 +621,8 @@ with tab_compose:
         except Exception as e:
             st.error(f"Lỗi đăng Facebook: {e}")
     with d:
-        image_file = st.file_uploader("Ảnh tự thiết kế để đăng ngay", type=["png", "jpg", "jpeg", "webp"], label_visibility="collapsed")
-        if image_file and st.button("Đăng ảnh ngay"):
+        image_file = st.file_uploader("Ảnh tự thiết kế để đăng ngay", type=["png", "jpg", "jpeg", "webp"], label_visibility="collapsed", key="compose_photo_upload_v10")
+        if image_file and st.button("Đăng ảnh ngay", key="compose_publish_photo_v10"):
             try:
                 fb = create_photo_post(st.session_state.get("post_text", ""), image_file.getvalue(), image_file.name, getattr(image_file, "type", None))
                 fb_id = str(fb.get("post_id") or fb.get("id") or "")
@@ -627,13 +633,13 @@ with tab_compose:
 
     st.markdown("##### Hẹn giờ bài này")
     sc1, sc2, sc3, sc4 = st.columns([1, 1, 1.2, 1])
-    schedule_date = sc1.date_input("Ngày đăng", value=now_local().date())
-    schedule_time = sc2.time_input("Giờ đăng", value=(now_local() + timedelta(hours=1)).time().replace(second=0, microsecond=0))
-    schedule_mode = sc3.selectbox("Kiểu hẹn", ["Facebook native - ổn định nhất", "Hàng đợi nội bộ - cần app/worker chạy"])
+    schedule_date = sc1.date_input("Ngày đăng", value=now_local().date(), key="compose_schedule_date_v10")
+    schedule_time = sc2.time_input("Giờ đăng", value=(now_local() + timedelta(hours=1)).time().replace(second=0, microsecond=0), key="compose_schedule_time_v10")
+    schedule_mode = sc3.selectbox("Kiểu hẹn", ["Facebook native - ổn định nhất", "Hàng đợi nội bộ - cần app/worker chạy"], key="compose_schedule_mode_v10")
     schedule_dt = datetime.combine(schedule_date, schedule_time).replace(tzinfo=TZ)
     schedule_check = check_schedule_time(schedule_dt, mode="facebook" if schedule_mode.startswith("Facebook") else "local")
     sc4.success(schedule_check.message) if schedule_check.ok else sc4.error(schedule_check.message)
-    if st.button("Hẹn giờ đăng bài", type="primary", disabled=not schedule_check.ok):
+    if st.button("Hẹn giờ đăng bài", type="primary", disabled=not schedule_check.ok, key="compose_schedule_btn_v10"):
         try:
             if schedule_mode.startswith("Facebook"):
                 fb = create_feed_post(st.session_state.get("post_text", ""), link=article.url or None, scheduled_at=schedule_dt)
@@ -650,9 +656,9 @@ with tab_schedule:
     st.subheader("🗓️ Lịch hẹn đăng bài")
     st.info("Bài link/text nên ưu tiên Facebook native. Hàng đợi nội bộ dùng khi bạn bật app/worker GitHub Actions.")
     s1, s2, s3, s4 = st.columns([1, 1, 1, 1])
-    if s1.button("Xử lý bài nội bộ đến giờ", type="primary"):
+    if s1.button("Xử lý bài nội bộ đến giờ", type="primary", key="schedule_process_due_v10"):
         st.write(publish_due_posts(store, limit=20)); st.rerun()
-    slots_count = s2.slider("Số khung giờ gợi ý", 3, 30, 10)
+    slots_count = s2.slider("Số khung giờ gợi ý", 3, 30, 10, key="schedule_slots_count_v10")
     slots = default_slots(count=slots_count)
     s3.metric("Bài sẵn sàng", len(store.list_posts(status="ready", limit=500)))
     s4.caption("Khung giờ: " + ", ".join([x.strftime("%d/%m %H:%M") for x in slots[:5]]))
@@ -662,17 +668,17 @@ with tab_schedule:
         scheduled_rows.extend(store.list_posts(status=stt, limit=200))
     scheduled_rows = sorted(scheduled_rows, key=lambda r: r.get("scheduled_at") or "")
     st.markdown("#### Bài đang hẹn/chờ đăng")
-    st.dataframe(post_row_table(scheduled_rows), use_container_width=True, hide_index=True) if scheduled_rows else st.caption("Chưa có bài đang hẹn giờ.")
+    st.dataframe(post_row_table(scheduled_rows), use_container_width=True, hide_index=True, key="df_scheduled_rows_v10") if scheduled_rows else st.caption("Chưa có bài đang hẹn giờ.")
 
     st.divider(); st.markdown("#### Xếp lịch hàng loạt cho bài đã sẵn sàng")
     ready_rows = store.list_posts(status="ready", limit=100)
     if not ready_rows:
         st.caption("Chưa có bài trạng thái Sẵn sàng.")
     else:
-        st.dataframe(post_row_table(ready_rows[:50]), use_container_width=True, hide_index=True)
-        batch_n = st.slider("Số bài muốn xếp lịch", 1, min(len(ready_rows), 30), min(len(ready_rows), 5))
-        batch_mode = st.selectbox("Kiểu xếp lịch hàng loạt", ["Facebook native", "Hàng đợi nội bộ"])
-        if st.button("Xếp lịch tự động theo khung giờ", type="primary"):
+        st.dataframe(post_row_table(ready_rows[:50]), use_container_width=True, hide_index=True, key="df_schedule_ready_rows_v10")
+        batch_n = st.slider("Số bài muốn xếp lịch", 1, min(len(ready_rows), 30), min(len(ready_rows), 5), key="schedule_batch_n_v10")
+        batch_mode = st.selectbox("Kiểu xếp lịch hàng loạt", ["Facebook native", "Hàng đợi nội bộ"], key="schedule_batch_mode_v10")
+        if st.button("Xếp lịch tự động theo khung giờ", type="primary", key="schedule_batch_apply_v10"):
             done, failed = 0, []
             for row, slot in zip(ready_rows[:batch_n], slots):
                 try:
@@ -711,16 +717,16 @@ with tab_plan:
 
     with plan_tab1:
         st.markdown("#### Calendar đăng bài")
-        days = st.slider("Xem lịch trong bao nhiêu ngày tới", 3, 30, 14)
+        days = st.slider("Xem lịch trong bao nhiêu ngày tới", 3, 30, 14, key="plan_calendar_days_v10")
         cal = calendar_rows(scheduled_like, days=days)
         if cal:
-            st.dataframe(pd.DataFrame(cal), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(cal), use_container_width=True, hide_index=True, key="df_plan_calendar_v10")
         else:
             st.caption("Chưa có bài nào trong calendar. Hãy đánh dấu bài Sẵn sàng rồi xếp lịch.")
         st.markdown("#### Cơ cấu nội dung hiện có")
         by_campaign = summary.get("by_campaign", {})
         if by_campaign:
-            st.dataframe(pd.DataFrame([{"Nhóm nội dung": k, "Số bài": v} for k, v in by_campaign.items()]), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame([{"Nhóm nội dung": k, "Số bài": v} for k, v in by_campaign.items()]), use_container_width=True, hide_index=True, key="df_plan_campaigns_v10")
 
     with plan_tab2:
         st.markdown("#### Lập kế hoạch đăng thông minh")
@@ -728,9 +734,9 @@ with tab_plan:
         ready_rows = store.list_posts(status="ready", limit=100)
         draft_rows = store.list_posts(status="draft", limit=100)
         c1, c2, c3 = st.columns(3)
-        plan_count = c1.slider("Số bài cần lên kế hoạch", 3, 30, min(12, max(3, len(ready_rows) or 3)))
-        min_gap = c2.slider("Khoảng cách tối thiểu giữa 2 bài", 45, 240, 90, step=15)
-        source_pool = c3.selectbox("Nguồn bài", ["Chỉ bài Sẵn sàng", "Sẵn sàng + Nháp"])
+        plan_count = c1.slider("Số bài cần lên kế hoạch", 3, 30, min(12, max(3, len(ready_rows) or 3)), key="plan_count_v10")
+        min_gap = c2.slider("Khoảng cách tối thiểu giữa 2 bài", 45, 240, 90, step=15, key="plan_min_gap_v10")
+        source_pool = c3.selectbox("Nguồn bài", ["Chỉ bài Sẵn sàng", "Sẵn sàng + Nháp"], key="plan_source_pool_v10")
         pool = ready_rows if source_pool == "Chỉ bài Sẵn sàng" else ready_rows + draft_rows
         slots = next_smart_slots(scheduled_like, count=plan_count, min_gap_minutes=min_gap)
         plan_rows = []
@@ -748,9 +754,9 @@ with tab_plan:
                 "ID": row.get("id"),
             })
         if plan_rows:
-            st.dataframe(pd.DataFrame(plan_rows), use_container_width=True, hide_index=True)
-            mode = st.radio("Khi bấm áp dụng", ["Chỉ chuyển nháp thành Sẵn sàng", "Xếp lịch nội bộ theo kế hoạch", "Hẹn Facebook native theo kế hoạch"], horizontal=False)
-            if st.button("Áp dụng kế hoạch v5", type="primary"):
+            st.dataframe(pd.DataFrame(plan_rows), use_container_width=True, hide_index=True, key="df_plan_rows_v10")
+            mode = st.radio("Khi bấm áp dụng", ["Chỉ chuyển nháp thành Sẵn sàng", "Xếp lịch nội bộ theo kế hoạch", "Hẹn Facebook native theo kế hoạch"], horizontal=False, key="plan_apply_mode_v10")
+            if st.button("Áp dụng kế hoạch", type="primary", key="plan_apply_btn_v10"):
                 done, failed = 0, []
                 for row, slot in zip(pool[:plan_count], slots):
                     try:
@@ -782,15 +788,15 @@ with tab_plan:
 
     with plan_tab3:
         st.markdown("#### Checklist chất lượng hàng loạt")
-        quality_status = st.multiselect("Trạng thái cần kiểm tra", ["draft", "ready", "queued", "scheduled_fb", "retry", "error", "published"], default=["draft", "ready"])
+        quality_status = st.multiselect("Trạng thái cần kiểm tra", ["draft", "ready", "queued", "scheduled_fb", "retry", "error", "published"], default=["draft", "ready"], key="plan_quality_status_v10")
         rows_quality: list[dict] = []
         for stt in quality_status:
             rows_quality.extend(store.list_posts(status=stt, limit=300))
         qrows = quality_table(rows_quality)
         if qrows:
-            st.dataframe(pd.DataFrame(qrows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(qrows), use_container_width=True, hide_index=True, key="df_quality_rows_v10")
             bad_ids = [x["ID"] for x in qrows if x["Điểm chất lượng"] < 60]
-            if bad_ids and st.button("Chuyển các bài chất lượng thấp về Nháp"):
+            if bad_ids and st.button("Chuyển các bài chất lượng thấp về Nháp", key="plan_quality_to_draft_v10"):
                 for pid in bad_ids:
                     store.update_post(pid, status="draft", review_note="v5: Cần sửa trước khi đăng/hẹn giờ")
                     store.add_log(pid, "v5_quality_to_draft", True, "Chất lượng thấp, chuyển về nháp để sửa")
@@ -803,7 +809,7 @@ with tab_plan:
         st.markdown("#### Phát hiện trùng tin")
         dup_rows = duplicate_groups(all_rows)
         if dup_rows:
-            st.dataframe(pd.DataFrame(dup_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(dup_rows), use_container_width=True, hide_index=True, key="df_duplicate_rows_v10")
         else:
             st.success("Chưa phát hiện nhóm bài trùng rõ ràng trong kho hiện tại.")
         st.markdown("#### Backup đầy đủ")
@@ -813,16 +819,16 @@ with tab_plan:
             articles=store.list_articles(min_score=0, limit=5000, include_drafted=True),
             logs=store.list_logs(limit=5000),
         )
-        st.download_button("Tải backup JSON đầy đủ", data=backup_bytes, file_name="beat_nghe_an_v5_full_backup.json", mime="application/json")
+        st.download_button("Tải backup JSON đầy đủ", data=backup_bytes, file_name="beat_nghe_an_v10_full_backup.json", mime="application/json", key="plan_backup_download_v10")
         e1, e2 = st.columns(2)
-        if e1.button("Đưa tất cả bài lỗi về hàng chờ retry"):
+        if e1.button("Đưa tất cả bài lỗi về hàng chờ retry", key="plan_requeue_errors_v10"):
             errors = store.list_posts(status="error", limit=200)
             for r in errors:
                 store.update_post(r["id"], status="retry", next_retry_at=utc_now_iso(), error="")
                 store.add_log(r["id"], "v5_requeue_error", True, "Đưa bài lỗi về retry")
             st.success(f"Đã đưa {len(errors)} bài lỗi về retry.")
             st.rerun()
-        if e2.button("Ghi log health-check v5"):
+        if e2.button("Ghi log health-check", key="plan_health_log_v10"):
             store.add_log(None, "v5_health_check", True, "App v5 hoạt động: storage, planner, quality, backup OK", extra_json=summary)
             st.success("Đã ghi log health-check.")
 
@@ -830,21 +836,21 @@ with tab_plan:
 with tab_posts:
     st.subheader("📚 Kho bài")
     status_options = ["Tất cả", "draft", "ready", "queued", "scheduled_fb", "retry", "published", "error"]
-    status_filter = st.selectbox("Lọc trạng thái", status_options, format_func=lambda x: "Tất cả" if x == "Tất cả" else clean_status(x))
+    status_filter = st.selectbox("Lọc trạng thái", status_options, format_func=lambda x: "Tất cả" if x == "Tất cả" else clean_status(x), key="posts_status_filter_v10")
     rows = store.list_posts(status=None if status_filter == "Tất cả" else status_filter, limit=500)
     if rows:
-        st.dataframe(post_row_table(rows), use_container_width=True, hide_index=True)
+        st.dataframe(post_row_table(rows), use_container_width=True, hide_index=True, key="df_posts_rows_v10")
         labels = [f"{clean_status(r.get('status'))} | {r.get('title') or '(không tiêu đề)'} | {r.get('id')}" for r in rows]
-        selected_label = st.selectbox("Chọn bài để sửa/quản lý", labels)
+        selected_label = st.selectbox("Chọn bài để sửa/quản lý", labels, key="posts_selected_label_v10")
         selected = rows[labels.index(selected_label)]; pid = selected["id"]
         with st.form("edit_post_form"):
-            title = st.text_input("Tiêu đề", value=selected.get("title") or "")
-            source_url = st.text_input("Link nguồn", value=selected.get("source_url") or "")
-            post_text = st.text_area("Nội dung", value=selected.get("post_text") or "", height=250)
-            first_comment = st.text_area("Bình luận nguồn", value=selected.get("first_comment") or "", height=100)
-            image_note = st.text_area("Gợi ý ảnh/link", value=selected.get("image_note") or "", height=80)
-            campaign = st.text_input("Chiến dịch/nhóm nội dung", value=selected.get("campaign") or "")
-            review_note = st.text_area("Ghi chú duyệt nội bộ", value=selected.get("review_note") or "", height=70)
+            title = st.text_input("Tiêu đề", value=selected.get("title") or "", key=f"edit_title_{pid}")
+            source_url = st.text_input("Link nguồn", value=selected.get("source_url") or "", key=f"edit_source_url_{pid}")
+            post_text = st.text_area("Nội dung", value=selected.get("post_text") or "", height=250, key=f"edit_post_text_{pid}")
+            first_comment = st.text_area("Bình luận nguồn", value=selected.get("first_comment") or "", height=100, key=f"edit_first_comment_{pid}")
+            image_note = st.text_area("Gợi ý ảnh/link", value=selected.get("image_note") or "", height=80, key=f"edit_image_note_{pid}")
+            campaign = st.text_input("Chiến dịch/nhóm nội dung", value=selected.get("campaign") or "", key=f"edit_campaign_{pid}")
+            review_note = st.text_area("Ghi chú duyệt nội bộ", value=selected.get("review_note") or "", height=70, key=f"edit_review_note_{pid}")
             col1, col2, col3 = st.columns(3)
             save_edit = col1.form_submit_button("Lưu sửa")
             set_ready = col2.form_submit_button("Đánh dấu sẵn sàng")
@@ -860,7 +866,7 @@ with tab_posts:
 
         st.markdown("#### Hành động nhanh với bài đã chọn")
         q1, q2, q3, q4 = st.columns(4)
-        if q1.button("Đăng ngay bài này", type="primary"):
+        if q1.button("Đăng ngay bài này", type="primary", key=f"post_publish_now_{pid}"):
             try:
                 fb = create_feed_post(selected.get("post_text") or "", link=selected.get("source_url") or None)
                 fb_id = str(fb.get("id") or ""); comment_id = ""
@@ -874,23 +880,23 @@ with tab_posts:
             except Exception as e:
                 store.update_post(pid, status="error", error=str(e)); store.add_log(pid, "publish_selected", False, str(e)); st.error(str(e))
         quick_slot = default_slots(count=1)[0]
-        if q2.button(f"Xếp lịch nội bộ {quick_slot.strftime('%d/%m %H:%M')}"):
+        if q2.button(f"Xếp lịch nội bộ {quick_slot.strftime('%d/%m %H:%M')}", key=f"post_schedule_local_{pid}"):
             schedule_local(store, pid, quick_slot.astimezone(timezone.utc).isoformat()); st.success("Đã xếp lịch nội bộ."); st.rerun()
-        if q3.button(f"Hẹn Facebook {quick_slot.strftime('%d/%m %H:%M')}"):
+        if q3.button(f"Hẹn Facebook {quick_slot.strftime('%d/%m %H:%M')}", key=f"post_schedule_fb_{pid}"):
             try:
                 fb = create_feed_post(selected.get("post_text") or "", link=selected.get("source_url") or None, scheduled_at=quick_slot)
                 store.update_post(pid, status="scheduled_fb", scheduled_at=quick_slot.astimezone(timezone.utc).isoformat(), schedule_mode="facebook_native", fb_post_id=str(fb.get("id") or ""), error="")
                 store.add_log(pid, "schedule_selected_fb", True, f"Hẹn Facebook lúc {quick_slot.isoformat()}"); st.success("Đã hẹn Facebook."); st.rerun()
             except Exception as e:
                 st.error(str(e))
-        if q4.button("Xóa post trên Facebook", disabled=not bool(selected.get("fb_post_id"))):
+        if q4.button("Xóa post trên Facebook", disabled=not bool(selected.get("fb_post_id")), key=f"post_delete_fb_{pid}"):
             try:
                 delete_post(selected.get("fb_post_id")); store.add_log(pid, "delete_facebook", True, f"Đã xóa Facebook post {selected.get('fb_post_id')}"); st.success("Đã gửi lệnh xóa post Facebook.")
             except Exception as e:
                 st.error(str(e))
         with st.expander("Log của bài"):
             logs = store.list_logs(post_id=pid, limit=50)
-            st.dataframe(pd.DataFrame(logs), use_container_width=True, hide_index=True) if logs else st.caption("Chưa có log bài này.")
+            st.dataframe(pd.DataFrame(logs), use_container_width=True, hide_index=True, key=f"df_post_logs_{pid}") if logs else st.caption("Chưa có log bài này.")
     else:
         st.caption("Kho chưa có bài.")
 
@@ -899,10 +905,10 @@ with tab_sources:
     c1, c2 = st.columns([1, 1.4])
     with c1:
         with st.form("add_source_form_v4"):
-            name = st.text_input("Tên nguồn", placeholder="Ví dụ: Báo Nghệ An")
-            url = st.text_input("RSS URL", placeholder="https://.../rss")
-            category = st.text_input("Nhóm nguồn", value="RSS")
-            priority = st.slider("Ưu tiên nguồn", 1, 10, 5)
+            name = st.text_input("Tên nguồn", placeholder="Ví dụ: Báo Nghệ An", key="source_name_v10")
+            url = st.text_input("RSS URL", placeholder="https://.../rss", key="source_url_v10")
+            category = st.text_input("Nhóm nguồn", value="RSS", key="source_category_v10")
+            priority = st.slider("Ưu tiên nguồn", 1, 10, 5, key="source_priority_v10")
             if st.form_submit_button("Lưu nguồn", type="primary"):
                 if not url.strip(): st.error("Chưa nhập RSS URL.")
                 else:
@@ -910,11 +916,11 @@ with tab_sources:
     with c2:
         sources = store.list_sources(include_disabled=True)
         if sources:
-            st.dataframe(pd.DataFrame(sources), use_container_width=True, hide_index=True)
-            label = st.selectbox("Chọn nguồn để bật/tắt", [f"{'✅' if s.get('enabled') in [True, 1] else '❌'} {s.get('name')} | {s.get('id')}" for s in sources])
+            st.dataframe(pd.DataFrame(sources), use_container_width=True, hide_index=True, key="df_sources_v10")
+            label = st.selectbox("Chọn nguồn để bật/tắt", [f"{'✅' if s.get('enabled') in [True, 1] else '❌'} {s.get('name')} | {s.get('id')}" for s in sources], key="source_select_v10")
             src = sources[[f"{'✅' if s.get('enabled') in [True, 1] else '❌'} {s.get('name')} | {s.get('id')}" for s in sources].index(label)]
-            toggle = st.toggle("Bật nguồn này", value=bool(src.get("enabled")))
-            if st.button("Cập nhật nguồn"):
+            toggle = st.toggle("Bật nguồn này", value=bool(src.get("enabled")), key="source_enabled_toggle_v10")
+            if st.button("Cập nhật nguồn", key="source_update_btn_v10"):
                 store.update_source(src["id"], enabled=toggle); st.success("Đã cập nhật nguồn."); st.rerun()
         else:
             st.caption("Chưa có nguồn lưu trong DB. Bạn có thể cấu hình RSS_SOURCES trong Secrets.")
@@ -922,7 +928,7 @@ with tab_sources:
 
 with tab_connect:
     st.subheader("🔐 Kết nối Facebook Page Beat Nghệ An")
-    st.info("Mục này dùng để kết nối Page riêng trước khi đăng. Cách an toàn nhất khi deploy là lưu Page ID/token trong Streamlit Secrets; cách nhập ở đây chỉ lưu tạm trong phiên làm việc, token bị che và không ghi vào GitHub.")
+    st.info("Bản v11 có 2 cách: ① bấm nút đăng nhập Facebook để lấy Page token tự động qua OAuth; ② nhập Page ID/token thủ công nếu bạn đã có token. Token không hiện đầy đủ trên giao diện và không được ghi vào GitHub.")
 
     status = credential_source()
     s1, s2, s3 = st.columns(3)
@@ -934,37 +940,138 @@ with tab_connect:
     connect_password = str(secret("PAGE_CONNECT_PASSWORD", "") or secret("PAGE_CONNECT_PASSWORD_SHA256", "") or "")
     page_connect_unlocked = (not connect_password) or bool(st.session_state.get("page_connect_authed"))
     if connect_password and not page_connect_unlocked:
-        cpw = st.text_input("Mật khẩu riêng để mở phần kết nối Page", type="password")
-        if st.button("Mở khu kết nối", type="primary"):
+        cpw = st.text_input("Mật khẩu riêng để mở phần kết nối Page", type="password", key="page_connect_password_v11")
+        if st.button("Mở khu kết nối", type="primary", key="page_connect_unlock_v11"):
             if secret_matches(cpw, "PAGE_CONNECT_PASSWORD"):
                 st.session_state["page_connect_authed"] = True
                 st.rerun()
             else:
                 st.error("Sai mật khẩu kết nối Page.")
-        st.caption("Khu nhập token đang khóa. Các tab khác vẫn dùng bình thường.")
+        st.caption("Khu kết nối Page đang khóa. Các tab khác vẫn dùng bình thường.")
     elif not connect_password:
-        st.warning("Bạn chưa đặt PAGE_CONNECT_PASSWORD. Nên thêm mật khẩu riêng này trong Secrets để bảo vệ khu nhập token.")
+        st.warning("Bạn chưa đặt PAGE_CONNECT_PASSWORD. Nên thêm mật khẩu riêng này trong Secrets để bảo vệ khu kết nối Page.")
     else:
         st.success("Đã mở khu kết nối Page trong phiên này.")
 
+    def _query_value(name: str) -> str:
+        try:
+            val = st.query_params.get(name, "")
+            if isinstance(val, list):
+                return str(val[0] if val else "")
+            return str(val or "")
+        except Exception:
+            return ""
+
     if page_connect_unlocked:
-        st.markdown("#### 2) Nhập Page ID và Page Access Token")
-        st.caption("Token được nhập bằng ô mật khẩu. App chỉ lưu tạm trong st.session_state nếu bạn bấm Lưu tạm phiên; khi app restart sẽ mất. Muốn ổn định lâu dài, hãy dán vào Streamlit Secrets ở mục bên dưới.")
+        st.markdown("#### 2) Cách mới: bấm nút đăng nhập Facebook")
+        st.caption("Bạn bấm nút bên dưới → Facebook mở trang đăng nhập/cấp quyền → quay lại app → app liệt kê Page bạn quản lý → bạn chọn Beat Nghệ An để kết nối.")
+
+        missing_oauth = oauth_missing_items()
+        redirect_uri = str(secret("FB_OAUTH_REDIRECT_URI", "") or "")
+        if missing_oauth:
+            st.warning("Chưa bật được đăng nhập Facebook vì thiếu: " + ", ".join(missing_oauth))
+            st.code('FB_APP_ID = "app_id_cua_meta_app"\nFB_APP_SECRET = "app_secret_cua_meta_app"\nFB_OAUTH_REDIRECT_URI = "https://ten-app.streamlit.app"\nFB_OAUTH_SCOPES = "pages_show_list,pages_read_engagement,pages_manage_posts,pages_manage_engagement"', language="toml")
+        else:
+            if "fb_oauth_state" not in st.session_state:
+                st.session_state["fb_oauth_state"] = pysecrets.token_urlsafe(24)
+            login_url = build_oauth_login_url(st.session_state["fb_oauth_state"], redirect_uri=redirect_uri)
+            st.success("OAuth đã cấu hình. Redirect URI đang dùng: " + redirect_uri)
+            lb1, lb2 = st.columns([1, 1])
+            with lb1:
+                if hasattr(st, "link_button"):
+                    st.link_button("Đăng nhập Facebook để kết nối Page", login_url, type="primary", use_container_width=True)
+                else:
+                    st.markdown(f"[Đăng nhập Facebook để kết nối Page]({login_url})")
+            with lb2:
+                if st.button("Tạo lại mã bảo vệ OAuth", key="oauth_regen_state_v11"):
+                    st.session_state["fb_oauth_state"] = pysecrets.token_urlsafe(24)
+                    st.rerun()
+
+        oauth_error = _query_value("error_message") or _query_value("error")
+        if oauth_error:
+            st.error("Facebook trả lỗi khi đăng nhập: " + oauth_error)
+
+        oauth_code = _query_value("code")
+        oauth_state = _query_value("state")
+        if oauth_code:
+            expected_state = str(st.session_state.get("fb_oauth_state", ""))
+            if expected_state and oauth_state and oauth_state != expected_state:
+                st.error("Mã bảo vệ OAuth không khớp. Hãy bấm 'Tạo lại mã bảo vệ OAuth' rồi đăng nhập lại Facebook.")
+            elif not oauth_configured():
+                st.error("App nhận được code từ Facebook nhưng thiếu FB_APP_ID/FB_APP_SECRET/FB_OAUTH_REDIRECT_URI trong Secrets.")
+            else:
+                if st.button("Hoàn tất kết nối từ Facebook", type="primary", key="oauth_finish_v11"):
+                    try:
+                        token_data = exchange_code_for_user_token(oauth_code, redirect_uri=redirect_uri)
+                        user_token = token_data.get("access_token")
+                        try:
+                            long_data = exchange_long_lived_user_token(user_token)
+                            user_token = long_data.get("access_token") or user_token
+                            st.caption("Đã đổi sang user token dài hạn nếu Meta cho phép.")
+                        except Exception as long_err:
+                            st.caption(f"Không đổi được token dài hạn, vẫn dùng token hiện tại: {long_err}")
+                        pages = get_pages_from_user_token(user_token)
+                        if not pages:
+                            st.warning("Facebook đăng nhập được nhưng không trả Page nào. Kiểm tra bạn có quyền quản trị Page và app đã được cấp pages_show_list/pages_manage_posts.")
+                        else:
+                            st.session_state["oauth_user_token"] = user_token
+                            st.session_state["oauth_pages"] = pages
+                            store.add_log(None, "facebook_oauth_pages", True, f"OAuth trả {len(pages)} Page")
+                            st.success(f"Đã lấy được {len(pages)} Page. Hãy chọn Page ở mục bên dưới.")
+                            try:
+                                st.query_params.clear()
+                            except Exception:
+                                pass
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Không hoàn tất OAuth được: {e}")
+
+        pages = st.session_state.get("oauth_pages") or []
+        if pages:
+            st.markdown("#### 3) Chọn Page sau khi đăng nhập Facebook")
+            labels = []
+            for pitem in pages:
+                tasks = pitem.get("tasks") or pitem.get("perms") or []
+                labels.append(f"{pitem.get('name')} · {pitem.get('id')} · quyền: {', '.join(tasks[:4]) if isinstance(tasks, list) else tasks}")
+            selected_label = st.selectbox("Chọn Page muốn app đăng bài", labels, key="oauth_page_select_v11")
+            selected_page = pages[labels.index(selected_label)]
+            csel1, csel2 = st.columns(2)
+            if csel1.button("Kết nối Page này cho phiên hiện tại", type="primary", key="oauth_connect_selected_v11"):
+                try:
+                    page_token = selected_page.get("access_token")
+                    if not page_token:
+                        st.error("Page này không có access_token. Hãy kiểm tra quyền app và vai trò Page.")
+                    else:
+                        info = test_connection_with_credentials(str(selected_page.get("id")), str(page_token))
+                        set_session_credentials(str(selected_page.get("id")), str(page_token))
+                        store.add_log(None, "facebook_oauth_connect_page", True, f"Đã kết nối OAuth tới Page {info.get('name')} ({info.get('id')})")
+                        st.success(f"Đã kết nối Page: {info.get('name')} · ID {info.get('id')}")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Chưa kết nối được Page này: {e}")
+            if csel2.button("Xóa danh sách Page OAuth", key="oauth_clear_pages_v11"):
+                st.session_state.pop("oauth_pages", None)
+                st.session_state.pop("oauth_user_token", None)
+                st.success("Đã xóa danh sách Page lấy từ OAuth trong phiên.")
+                st.rerun()
+
+        st.markdown("#### 4) Cách dự phòng: nhập Page ID và Page Access Token thủ công")
+        st.caption("Dùng cách này nếu bạn đã tự tạo Page Access Token. App chỉ lưu tạm trong phiên nếu bạn bấm lưu; khi app restart sẽ mất. Muốn ổn định lâu dài, hãy dán vào Streamlit Secrets.")
         fc1, fc2 = st.columns([0.8, 1.4])
         with fc1:
-            page_id_input = st.text_input("FB_PAGE_ID", value=status.get("page_id") or "", placeholder="ID Page Beat Nghệ An")
+            page_id_input = st.text_input("FB_PAGE_ID", value=status.get("page_id") or "", placeholder="ID Page Beat Nghệ An", key="page_connect_page_id_v11")
         with fc2:
-            token_input = st.text_input("FB_PAGE_ACCESS_TOKEN", type="password", placeholder="Dán Page Access Token ở đây")
+            token_input = st.text_input("FB_PAGE_ACCESS_TOKEN", type="password", placeholder="Dán Page Access Token ở đây", key="page_connect_token_v11")
 
         b1, b2, b3 = st.columns(3)
-        if b1.button("Test token vừa nhập", type="primary", disabled=not bool(page_id_input and token_input)):
+        if b1.button("Test token vừa nhập", type="primary", disabled=not bool(page_id_input and token_input), key="page_connect_test_input_v11"):
             try:
                 info = test_connection_with_credentials(page_id_input, token_input)
                 st.success(f"Kết nối được Page: {info.get('name')} · ID {info.get('id')}")
                 st.json({"id": info.get("id"), "name": info.get("name"), "link": info.get("link"), "fan_count": info.get("fan_count")})
             except Exception as e:
                 st.error(f"Chưa kết nối được: {e}")
-        if b2.button("Lưu tạm trong phiên", disabled=not bool(page_id_input and token_input)):
+        if b2.button("Lưu tạm trong phiên", disabled=not bool(page_id_input and token_input), key="page_connect_save_session_v11"):
             try:
                 info = test_connection_with_credentials(page_id_input, token_input)
                 set_session_credentials(page_id_input, token_input)
@@ -973,49 +1080,54 @@ with tab_connect:
                 st.rerun()
             except Exception as e:
                 st.error(f"Không lưu vì token chưa test thành công: {e}")
-        if b3.button("Xóa kết nối tạm"):
+        if b3.button("Xóa kết nối tạm", key="page_connect_clear_session_v11"):
             clear_session_credentials()
             st.session_state.pop("page_connect_authed", None)
             st.success("Đã xóa kết nối tạm trong phiên.")
             st.rerun()
 
-        st.markdown("#### 3) Kiểm tra Page đang dùng")
+        st.markdown("#### 5) Kiểm tra Page đang dùng")
         c1, c2, c3 = st.columns(3)
-        if c1.button("Test Page đang dùng"):
+        if c1.button("Test Page đang dùng", key="page_connect_test_current_v11"):
             try:
                 st.json(test_connection())
             except Exception as e:
                 st.error(str(e))
-        if c2.button("Debug token sâu"):
+        if c2.button("Debug token sâu", key="page_connect_debug_token_v11"):
             try:
                 data = debug_token()
                 st.json(data)
             except Exception as e:
                 st.error(str(e))
-        if c3.button("Xem bài đã hẹn"):
+        if c3.button("Xem bài đã hẹn", key="page_connect_scheduled_posts_v11"):
             try:
                 rows_sched = get_scheduled_posts(limit=50)
-                st.dataframe(pd.DataFrame(rows_sched), use_container_width=True, hide_index=True) if rows_sched else st.info("Chưa thấy bài hẹn giờ nào từ Facebook.")
+                st.dataframe(pd.DataFrame(rows_sched), use_container_width=True, hide_index=True, key="df_page_connect_scheduled_v11") if rows_sched else st.info("Chưa thấy bài hẹn giờ nào từ Facebook.")
             except Exception as e:
                 st.error(str(e))
 
-        st.markdown("#### 4) Cấu hình Secrets ổn định để deploy")
+        st.markdown("#### 6) Cấu hình Secrets ổn định để deploy")
         secrets_block = (
             'APP_PASSWORD = "mat-khau-dang-nhap-app"\n'
             'PAGE_CONNECT_PASSWORD = "mat-khau-rieng-ket-noi-page"\n'
+            'FB_APP_ID = "app_id_cua_meta_app"\n'
+            'FB_APP_SECRET = "app_secret_cua_meta_app"\n'
+            f'FB_OAUTH_REDIRECT_URI = "{redirect_uri or "https://ten-app.streamlit.app"}"\n'
+            'FB_OAUTH_SCOPES = "pages_show_list,pages_read_engagement,pages_manage_posts,pages_manage_engagement"\n'
             f'FB_PAGE_ID = "{page_id_input or "id_page_beat_nghe_an"}"\n'
-            'FB_PAGE_ACCESS_TOKEN = "PASTE_TOKEN_HERE"\n'
+            'FB_PAGE_ACCESS_TOKEN = "PASTE_TOKEN_HERE_NEU_MUON_LUU_CO_DINH"\n'
             'FB_GRAPH_VERSION = "v25.0"\n'
         )
         st.code(secrets_block, language="toml")
         st.caption("Không commit file .streamlit/secrets.toml lên GitHub. Khi deploy Streamlit Cloud, dán phần này vào Advanced settings → Secrets.")
 
-        with st.expander("Checklist lấy token đúng"):
-            st.write("- Token phải là Page Access Token của đúng Page Beat Nghệ An, không phải token linh tinh của app khác.")
-            st.write("- Quyền thường cần: pages_manage_posts, pages_read_engagement, pages_manage_engagement nếu muốn đăng bài và bình luận nguồn bằng Page.")
-            st.write("- Người cấp token phải có quyền quản trị/tác vụ phù hợp trên Page.")
-            st.write("- Token có thể hết hạn hoặc bị thu hồi khi đổi mật khẩu, gỡ quyền app, hoặc Meta thay đổi quyền; khi lỗi thì vào tab này test lại.")
-            st.write("- Tuyệt đối không gửi token cho người khác, không dán token vào bài viết, GitHub public, Facebook comment, hoặc ảnh chụp màn hình.")
+        with st.expander("Checklist đăng nhập Facebook đúng"):
+            st.write("- Trong Meta Developer, tạo app và bật Facebook Login hoặc Facebook Login for Business.")
+            st.write("- Valid OAuth Redirect URI phải trùng chính xác FB_OAUTH_REDIRECT_URI, ví dụ https://appvietbao.streamlit.app")
+            st.write("- Tài khoản Facebook đăng nhập phải có quyền quản lý Page Beat Nghệ An.")
+            st.write("- Quyền thường cần: pages_show_list, pages_read_engagement, pages_manage_posts, pages_manage_engagement.")
+            st.write("- Khi app ở Development Mode, chỉ tài khoản có vai trò trong Meta App mới login được. Muốn người khác dùng phải qua cấu hình/review của Meta.")
+            st.write("- Tuyệt đối không gửi token cho người khác, không dán token vào GitHub public, Facebook comment hoặc ảnh chụp màn hình.")
 
 with tab_ops:
     st.subheader("🛡️ An toàn & vận hành")
@@ -1029,10 +1141,10 @@ with tab_ops:
     o4.metric("Vai trò", st.session_state.get("role", "unknown"))
 
     st.markdown("#### Kiểm tra bảo mật cấu hình")
-    st.dataframe(pd.DataFrame(security_check_rows()), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(security_check_rows()), use_container_width=True, hide_index=True, key="df_security_checks_v10")
 
     st.markdown("#### Kiểm tra Page không lộ token")
-    if st.button("Tạo báo cáo trạng thái Page an toàn"):
+    if st.button("Tạo báo cáo trạng thái Page an toàn", key="ops_page_status_report_v10"):
         st.json(page_status_report())
 
     st.markdown("#### Rà bài trước khi đăng")
@@ -1043,9 +1155,9 @@ with tab_ops:
         gate = publish_gate(r.get("post_text") or "", r.get("source_url") or "", r.get("title") or "", r.get("summary") or "", r.get("first_comment") or "")
         rows_gate.append({"ID": r.get("id"), "Trạng thái": clean_status(r.get("status")), "Tiêu đề": r.get("title"), "Kết quả": "OK" if gate.ok else "CHẶN", "Mức": gate.level, "Ghi chú": " | ".join(gate.notes[:3])})
     if rows_gate:
-        st.dataframe(pd.DataFrame(rows_gate), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows_gate), use_container_width=True, hide_index=True, key="df_publish_gate_v10")
         block_ids = [x["ID"] for x in rows_gate if x["Kết quả"] == "CHẶN"]
-        if block_ids and st.button(f"Chuyển {len(block_ids)} bài bị chặn về Nháp"):
+        if block_ids and st.button(f"Chuyển {len(block_ids)} bài bị chặn về Nháp", key="ops_blocked_to_draft_v10"):
             for pid in block_ids:
                 store.update_post(pid, status="draft", review_note="v9 safety gate: chuyển về nháp để duyệt lại")
                 store.add_log(pid, "v9_safety_gate", True, "Chuyển về nháp vì không qua cổng an toàn trước khi đăng")
@@ -1055,9 +1167,9 @@ with tab_ops:
         st.caption("Chưa có bài Ready/Queued để rà.")
 
     st.markdown("#### Backup đầy đủ")
-    st.download_button("Tải backup JSON đầy đủ", data=backup_json_bytes(store), file_name="beat_nghe_an_v9_full_backup.json", mime="application/json")
+    st.download_button("Tải backup JSON đầy đủ", data=backup_json_bytes(store), file_name="beat_nghe_an_v10_ops_backup.json", mime="application/json", key="ops_backup_download_v10")
 
-    with st.expander("Secrets gợi ý cho bản v9"):
+    with st.expander("Secrets gợi ý cho bản v10"):
         st.code('''ADMIN_PASSWORD = "mat-khau-admin"
 EDITOR_PASSWORD = "mat-khau-bien-tap"
 VIEWER_PASSWORD = "mat-khau-chi-xem"
@@ -1085,16 +1197,16 @@ with tab_settings:
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("#### Kiểm tra Facebook Page")
-        if st.button("Test kết nối Page", type="primary"):
+        if st.button("Test kết nối Page", type="primary", key="settings_test_page_v10"):
             try: st.json(test_connection())
             except Exception as e: st.error(str(e))
-        if st.button("Debug token sâu"):
+        if st.button("Debug token sâu", key="settings_debug_token_v10"):
             try: st.json(debug_token())
             except Exception as e: st.error(str(e))
-        if st.button("Lấy danh sách bài đã hẹn trên Facebook"):
+        if st.button("Lấy danh sách bài đã hẹn trên Facebook", key="settings_get_scheduled_v10"):
             try:
                 rows_sched = get_scheduled_posts(limit=50)
-                st.dataframe(pd.DataFrame(rows_sched), use_container_width=True, hide_index=True) if rows_sched else st.info("Facebook chưa trả về bài hẹn giờ nào.")
+                st.dataframe(pd.DataFrame(rows_sched), use_container_width=True, hide_index=True, key="df_settings_scheduled_v10") if rows_sched else st.info("Facebook chưa trả về bài hẹn giờ nào.")
             except Exception as e: st.error(str(e))
     with col2:
         st.markdown("#### Secrets checklist")
@@ -1111,13 +1223,13 @@ with tab_settings:
         }
         st.json(checklist)
         st.markdown("#### Export dữ liệu")
-        st.download_button("Tải kho bài CSV", data=export_csv_bytes(store.export_posts()), file_name="beat_nghe_an_posts_export.csv", mime="text/csv")
-        st.download_button("Tải log CSV", data=export_csv_bytes(store.list_logs(limit=1000)), file_name="beat_nghe_an_automation_logs.csv", mime="text/csv")
+        st.download_button("Tải kho bài CSV", data=export_csv_bytes(store.export_posts()), file_name="beat_nghe_an_posts_export.csv", mime="text/csv", key="settings_posts_csv_v10")
+        st.download_button("Tải log CSV", data=export_csv_bytes(store.list_logs(limit=1000)), file_name="beat_nghe_an_automation_logs.csv", mime="text/csv", key="settings_logs_csv_v10")
 
     st.divider()
     st.markdown("#### Health check nhanh trước khi deploy")
     st.caption("Kiểm tra package, timezone, lịch đăng, secrets, Supabase/SQLite và log. Nút này không đăng bài, không gọi Facebook nếu bạn chưa bấm test Page riêng.")
-    if st.button("Chạy kiểm tra hệ thống", type="primary"):
+    if st.button("Chạy kiểm tra hệ thống", type="primary", key="settings_health_check_v10"):
         checks = run_health_checks(store)
         summary = health_summary(checks)
         h1, h2, h3, h4 = st.columns(4)
@@ -1125,7 +1237,7 @@ with tab_settings:
         h2.metric("OK", summary["ok"])
         h3.metric("Cảnh báo", summary["warning"])
         h4.metric("Lỗi", summary["error"])
-        st.dataframe(pd.DataFrame(health_rows(checks)), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(health_rows(checks)), use_container_width=True, hide_index=True, key="df_health_checks_v10")
 
     st.divider()
     st.markdown("#### Gợi ý chạy nhanh, mượt, ổn định")

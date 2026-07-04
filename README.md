@@ -1,47 +1,17 @@
-# Beat Nghệ An AutoPost Pro v9 Secure Ops
+# Beat Nghệ An AutoPost Pro v11 OAuth Connect
 
-Web app Streamlit riêng cho Page **Beat Nghệ An**: nhập tin từ đoạn chat **Beat Nghệ An Hourly**, quét RSS, chống trùng, tạo nháp/sẵn sàng, kiểm tra rủi ro, lập lịch hẹn đăng Facebook Page và lưu dữ liệu vĩnh viễn bằng Supabase.
+Web app Streamlit riêng cho Page **Beat Nghệ An**: nhập tin từ đoạn chat **Beat Nghệ An Hourly**, quét RSS, chống trùng, tạo nháp/sẵn sàng, kiểm tra rủi ro, lập lịch hẹn đăng Facebook Page, lưu Supabase và kết nối Page bằng nút **Đăng nhập Facebook**.
 
-Bản **v9 Secure Ops** giữ toàn bộ chức năng v8 và nâng cấp thêm lớp vận hành an toàn: đăng nhập theo vai trò, dry-run test không đăng thật, cổng rà bài trước khi đăng, backup JSON đầy đủ, kiểm tra Page không lộ token và Facebook API retry ổn định hơn.
+Bản **v11 OAuth Connect** nâng cấp từ v10 Hotfix:
 
-## Tính năng chính
+- Thêm luồng **Facebook OAuth**: bấm nút đăng nhập Facebook → Facebook xin quyền → quay lại app → chọn Page → app tự dùng Page access token trong phiên.
+- Giữ cách nhập Page ID/token thủ công làm dự phòng.
+- Không hiện token đầy đủ trên UI.
+- Có mật khẩu riêng `PAGE_CONNECT_PASSWORD` cho khu kết nối Page.
+- Giữ toàn bộ sửa lỗi `StreamlitDuplicateElementId` từ v10.
+- Có health-check, smoke-test, audit widget key.
 
-### 1. Nhập tin từ ChatGPT / Beat Nghệ An Hourly
-- Tab **Nhập từ ChatGPT**.
-- Dán nội dung từ đoạn chat Beat Nghệ An Hourly hoặc upload `.txt`, `.json`, `.zip` export.
-- Tự tách nhiều tin, nhận diện tiêu đề, link nguồn, nội dung bài đăng, bình luận nguồn, gợi ý ảnh/link preview.
-- Tạo nháp hoặc bài **Sẵn sàng** hàng loạt.
-- Chống trùng theo link và `content_hash`.
-
-### 2. Kết nối Facebook Page an toàn hơn
-- Tab **Kết nối Facebook Page** riêng.
-- Có mật khẩu riêng `PAGE_CONNECT_PASSWORD` hoặc `PAGE_CONNECT_PASSWORD_SHA256`.
-- Token nhập bằng ô password, bị che, không ghi vào GitHub.
-- Có test Page, debug token, xem bài đã hẹn.
-- Ưu tiên Streamlit Secrets để chạy ổn định lâu dài.
-
-### 3. An toàn & vận hành v9
-- Tab **An toàn & vận hành** mới.
-- Đăng nhập theo vai trò: `ADMIN_PASSWORD`, `EDITOR_PASSWORD`, `VIEWER_PASSWORD` hoặc dạng SHA256.
-- `DRY_RUN_MODE`: test đăng/hẹn giờ không đăng thật lên Facebook.
-- `BLOCK_HIGH_RISK_POSTS`: chặn bài vượt ngưỡng rủi ro trước khi đăng.
-- `MAX_RISK_SCORE_TO_PUBLISH`, `MAX_POST_CHARS` để giảm đăng nhầm bài nhạy cảm/quá dài.
-- Rà hàng loạt bài Ready/Queued và chuyển bài rủi ro về Nháp.
-- Backup JSON đầy đủ: bài viết, nguồn RSS, tin cache, logs.
-
-### 4. Lịch hẹn đăng bài
-- Hẹn Facebook native cho bài link/text.
-- Hàng đợi nội bộ cho worker/app xử lý.
-- Retry lỗi tự động, có log chi tiết.
-- Xếp lịch hàng loạt theo khung giờ.
-- GitHub Actions worker chạy định kỳ mỗi 15 phút.
-
-### 5. Tốc độ & ổn định
-- RSS có timeout/User-Agent.
-- Facebook API có retry cho lỗi mạng/rate limit tạm thời.
-- SQLite local bật WAL + busy timeout để test mượt hơn.
-- Supabase dùng cho dữ liệu vĩnh viễn khi deploy thật.
-- Health-check và smoke-test có sẵn.
+> Lưu ý: không có app nào cam kết 100% không lỗi trong mọi tình huống vì còn phụ thuộc Meta/Facebook API, quyền Page, token, mạng, Supabase và Streamlit Cloud. Bản này đã thêm kiểm tra, retry, khóa đăng trùng và chế độ `DRY_RUN_MODE` để giảm rủi ro tối đa.
 
 ## Chạy local
 
@@ -50,42 +20,40 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Cấu hình Supabase
+## Cấu hình đăng nhập Facebook bằng nút
 
-1. Tạo project Supabase.
-2. Vào SQL Editor.
-3. Chạy file:
+Bạn cần tạo Meta App riêng trong Meta for Developers, bật Facebook Login/Facebook Login for Business và thêm **Valid OAuth Redirect URI** đúng URL app Streamlit, ví dụ:
 
 ```text
-sql/supabase_schema.sql
+https://appvietbao.streamlit.app
 ```
 
-Nếu đã chạy schema từ v4/v5/v6/v7/v8 thì bản v9 vẫn tương thích.
-
-## Secrets Streamlit Cloud
-
-Dán trong **Advanced settings > Secrets**:
+Dán Secrets trong Streamlit Cloud:
 
 ```toml
 ADMIN_PASSWORD = "mat-khau-admin"
-EDITOR_PASSWORD = "mat-khau-bien-tap"
-VIEWER_PASSWORD = "mat-khau-chi-xem"
-PAGE_CONNECT_PASSWORD = "mat-khau-rieng-de-mo-ket-noi-page"
+PAGE_CONNECT_PASSWORD = "mat-khau-rieng-ket-noi-page"
 APP_TIMEZONE = "Asia/Bangkok"
 
 STORAGE_BACKEND = "supabase"
 SUPABASE_URL = "https://xxx.supabase.co"
 SUPABASE_SERVICE_ROLE_KEY = "service-role-key-cua-ban"
 
+FB_GRAPH_VERSION = "v25.0"
+FB_APP_ID = "app_id_meta_app"
+FB_APP_SECRET = "app_secret_meta_app"
+FB_OAUTH_REDIRECT_URI = "https://appvietbao.streamlit.app"
+FB_OAUTH_SCOPES = "pages_show_list,pages_read_engagement,pages_manage_posts,pages_manage_engagement"
+FB_APP_ACCESS_TOKEN = "APP_ID|APP_SECRET"
+
+# Dự phòng nếu muốn lưu Page token cố định
 FB_PAGE_ID = "id_page_beat_nghe_an"
 FB_PAGE_ACCESS_TOKEN = "page_access_token_dai_han"
-FB_GRAPH_VERSION = "v25.0"
-FB_APP_ACCESS_TOKEN = "APP_ID|APP_SECRET"
 
 OPENAI_API_KEY = ""
 OPENAI_MODEL = "gpt-4.1-mini"
 
-DRY_RUN_MODE = false
+DRY_RUN_MODE = true
 BLOCK_HIGH_RISK_POSTS = true
 MAX_RISK_SCORE_TO_PUBLISH = 64
 MAX_POST_CHARS = 1800
@@ -104,38 +72,53 @@ https://example.com/rss
 """
 ```
 
-### Dùng mật khẩu SHA256 thay vì lưu mật khẩu thường
-
-```bash
-python scripts/generate_password_hash.py
-```
-
-Sau đó dán vào Secrets dạng:
+Khi mới test nên để:
 
 ```toml
-ADMIN_PASSWORD_SHA256 = "hash_o_day"
-PAGE_CONNECT_PASSWORD_SHA256 = "hash_o_day"
+DRY_RUN_MODE = true
 ```
 
-## Cách dùng với Beat Nghệ An Hourly
+Khi đã test kết nối Page, lịch hẹn và đăng thử nội bộ ổn, đổi thành:
 
-1. Mở đoạn chat **Beat Nghệ An Hourly** trong ChatGPT.
-2. Copy phần tin/bài muốn đăng.
-3. Mở app → tab **Nhập từ ChatGPT**.
-4. Dán nội dung vào ô nhập.
-5. Bấm **Phân tích nội dung ChatGPT**.
-6. Chọn tin đúng → bấm **Tạo nháp** hoặc **Tạo bài Sẵn sàng**.
-7. Sang **An toàn & vận hành** để rà bài.
-8. Sang **Lịch hẹn đăng bài** để hẹn Facebook native hoặc hàng đợi nội bộ.
+```toml
+DRY_RUN_MODE = false
+```
+
+## Luồng kết nối Page trong app
+
+1. Mở tab **Kết nối Facebook Page**.
+2. Nhập mật khẩu khu Page.
+3. Bấm **Đăng nhập Facebook để kết nối Page**.
+4. Đăng nhập Facebook và cấp quyền.
+5. Facebook quay lại app.
+6. Bấm **Hoàn tất kết nối từ Facebook**.
+7. Chọn Page **Beat Nghệ An**.
+8. Bấm **Kết nối Page này cho phiên hiện tại**.
+9. Bấm **Test Page đang dùng**.
 
 ## Kiểm tra trước khi deploy
 
 ```bash
 python -m compileall .
+python scripts/audit_streamlit_keys.py
 python tests/smoke_test.py
 python scripts/health_check.py
 ```
 
-## Lưu ý an toàn
+## Supabase
 
-Không thể bảo đảm 100% không lỗi trong mọi tình huống vì còn phụ thuộc Facebook token, quyền Page, Supabase, mạng và API Meta. Bản v9 đã thêm role login, token masking, dry-run, retry, safety gate, backup, log và health-check để giảm rủi ro tối đa khi dùng thật.
+Chạy file SQL:
+
+```text
+sql/supabase_schema.sql
+```
+
+Nếu chưa cấu hình Supabase, app fallback SQLite để test, nhưng dùng thật lâu dài nên dùng Supabase.
+
+## An toàn
+
+- Không commit `.streamlit/secrets.toml` thật lên GitHub.
+- Không chụp màn hình token.
+- Không gửi `FB_APP_SECRET` hoặc Page token cho người khác.
+- App chỉ dùng OAuth khi `FB_APP_ID`, `FB_APP_SECRET`, `FB_OAUTH_REDIRECT_URI` đã đủ.
+- Nếu app ở Development Mode, chỉ tài khoản được thêm vai trò trong Meta App mới đăng nhập được.

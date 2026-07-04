@@ -218,3 +218,98 @@ def page_status_report() -> dict[str, Any]:
     except Exception as e:
         out["page"] = {"ok": False, "error": str(e)}
     return out
+
+# -----------------------------
+# Facebook OAuth Login helpers
+# -----------------------------
+from urllib.parse import urlencode
+
+
+def oauth_configured() -> bool:
+    return bool(secret("FB_APP_ID", "") and secret("FB_APP_SECRET", "") and secret("FB_OAUTH_REDIRECT_URI", ""))
+
+
+def oauth_missing_items() -> list[str]:
+    missing: list[str] = []
+    for key in ["FB_APP_ID", "FB_APP_SECRET", "FB_OAUTH_REDIRECT_URI"]:
+        if not secret(key, ""):
+            missing.append(key)
+    return missing
+
+
+def default_oauth_scopes() -> str:
+    # public_profile is automatically allowed. Page permissions may require Meta review if app is live for other users.
+    raw = secret("FB_OAUTH_SCOPES", "pages_show_list,pages_read_engagement,pages_manage_posts,pages_manage_engagement")
+    scopes = [x.strip() for x in str(raw).replace("\n", ",").split(",") if x.strip()]
+    return ",".join(dict.fromkeys(scopes))
+
+
+def build_oauth_login_url(state: str, redirect_uri: str | None = None) -> str:
+    app_id = secret("FB_APP_ID", "")
+    if not app_id:
+        raise FacebookError("Chưa cấu hình FB_APP_ID trong Secrets.")
+    redirect = redirect_uri or secret("FB_OAUTH_REDIRECT_URI", "")
+    if not redirect:
+        raise FacebookError("Chưa cấu hình FB_OAUTH_REDIRECT_URI trong Secrets.")
+    version = secret("FB_GRAPH_VERSION", "v25.0") or "v25.0"
+    params = {
+        "client_id": str(app_id),
+        "redirect_uri": str(redirect),
+        "state": state,
+        "scope": default_oauth_scopes(),
+        "response_type": "code",
+    }
+    return f"https://www.facebook.com/{version}/dialog/oauth?{urlencode(params)}"
+
+
+def exchange_code_for_user_token(code: str, redirect_uri: str | None = None) -> dict[str, Any]:
+    app_id = secret("FB_APP_ID", "")
+    app_secret = secret("FB_APP_SECRET", "")
+    redirect = redirect_uri or secret("FB_OAUTH_REDIRECT_URI", "")
+    if not (app_id and app_secret and redirect):
+        raise FacebookError("Thiếu FB_APP_ID, FB_APP_SECRET hoặc FB_OAUTH_REDIRECT_URI trong Secrets.")
+    url = f"{_base_url()}/oauth/access_token"
+    resp = _session().get(url, params={
+        "client_id": str(app_id),
+        "redirect_uri": str(redirect),
+        "client_secret": str(app_secret),
+        "code": str(code),
+    }, timeout=30)
+    return _handle(resp)
+
+
+def exchange_long_lived_user_token(short_token: str) -> dict[str, Any]:
+    app_id = secret("FB_APP_ID", "")
+    app_secret = secret("FB_APP_SECRET", "")
+    if not (app_id and app_secret):
+        raise FacebookError("Thiếu FB_APP_ID hoặc FB_APP_SECRET trong Secrets.")
+    url = f"{_base_url()}/oauth/access_token"
+    resp = _session().get(url, params={
+        "grant_type": "fb_exchange_token",
+        "client_id": str(app_id),
+        "client_secret": str(app_secret),
+        "fb_exchange_token": str(short_token),
+    }, timeout=30)
+    return _handle(resp)
+
+
+def get_pages_from_user_token(user_token: str) -> list[dict[str, Any]]:
+    url = f"{_base_url()}/me/accounts"
+    resp = _session().get(url, params={
+        "fields": "id,name,access_token,category,tasks,perms,picture{url}",
+        "limit": 100,
+        "access_token": str(user_token),
+    }, timeout=30)
+    data = _handle(resp)
+    return data.get("data", []) if isinstance(data, dict) else []
+
+
+def choose_page_from_oauth(page_id: str, pages: list[dict[str, Any]]) -> dict[str, Any]:
+    target = str(page_id).strip()
+    for page in pages:
+        if str(page.get("id", "")).strip() == target:
+            token = page.get("access_token")
+            if not token:
+                raise FacebookError("Page tìm thấy nhưng Facebook không trả Page access token. Hãy kiểm tra quyền pages_show_list/pages_manage_posts và vai trò quản trị Page.")
+            return page
+    raise FacebookError("Không thấy Page ID này trong danh sách Page của tài khoản vừa đăng nhập.")
