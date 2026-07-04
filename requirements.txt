@@ -1,0 +1,9 @@
+streamlit>=1.36
+streamlit-autorefresh>=1.0.1
+pandas>=2.2
+requests>=2.31
+beautifulsoup4>=4.12
+feedparser>=6.0
+supabase>=2.4
+openai>=1.30
+python-dateutil>=2.9
