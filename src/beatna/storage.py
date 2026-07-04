@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from .article import ArticleInfo
-from .config import secret
+from .config import lock_ttl_minutes, secret
 
 DB_PATH = Path("data/beatna_v4.db")
 
@@ -71,6 +71,7 @@ class BaseStore:
     def get_post(self, post_id: str) -> dict[str, Any] | None: ...
     def list_posts(self, status: str | None = None, limit: int = 200) -> list[dict[str, Any]]: ...
     def list_due_posts(self, now_iso: str, limit: int = 20) -> list[dict[str, Any]]: ...
+    def try_claim_post(self, post_id: str, now_iso: str | None = None) -> bool: ...
     def find_post_by_hash(self, content_hash: str) -> dict[str, Any] | None: ...
     def add_source(self, name: str, url: str, category: str = "RSS", priority: int = 1) -> None: ...
     def update_source(self, source_id: str, **fields) -> None: ...
@@ -90,8 +91,14 @@ class SQLiteStore(BaseStore):
 
     def connect(self) -> sqlite3.Connection:
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        # WAL + busy_timeout makes the app more tolerant when Streamlit and a worker
+        # touch the local database at nearly the same time. Supabase is still preferred
+        # for production, but this makes local testing much smoother.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
     def _ensure_columns(self, conn: sqlite3.Connection, table: str, fields: list[str]) -> None:
@@ -185,6 +192,24 @@ class SQLiteStore(BaseStore):
         ORDER BY priority DESC, scheduled_at ASC LIMIT ?
         """, (now_iso, now_iso, limit)).fetchall()
         conn.close(); return [dict(r) for r in rows]
+
+    def try_claim_post(self, post_id: str, now_iso: str | None = None) -> bool:
+        now_iso = now_iso or utc_now_iso()
+        lock_expired = (datetime.now(timezone.utc) - timedelta(minutes=max(5, lock_ttl_minutes()))).isoformat()
+        conn = self.connect()
+        cur = conn.execute("""
+        UPDATE posts SET status='publishing', locked_at=?, updated_at=?
+        WHERE id=?
+          AND status IN ('queued','scheduled_local','retry')
+          AND scheduled_at IS NOT NULL
+          AND scheduled_at <= ?
+          AND (next_retry_at IS NULL OR next_retry_at = '' OR next_retry_at <= ?)
+          AND (locked_at IS NULL OR locked_at = '' OR locked_at <= ?)
+        """, (now_iso, now_iso, post_id, now_iso, now_iso, lock_expired))
+        conn.commit()
+        ok = cur.rowcount == 1
+        conn.close()
+        return ok
 
     def find_post_by_hash(self, content_hash: str) -> dict[str, Any] | None:
         if not content_hash: return None
@@ -302,6 +327,26 @@ class SupabaseStore(BaseStore):
 
     def list_due_posts(self, now_iso: str, limit: int = 20) -> list[dict[str, Any]]:
         return (self.client.table("posts").select("*").in_("status", ["queued", "scheduled_local", "retry"]).lte("scheduled_at", now_iso).or_(f"next_retry_at.is.null,next_retry_at.lte.{now_iso}").order("priority", desc=True).order("scheduled_at", desc=False).limit(limit).execute().data or [])
+
+    def try_claim_post(self, post_id: str, now_iso: str | None = None) -> bool:
+        now_iso = now_iso or utc_now_iso()
+        lock_expired = (datetime.now(timezone.utc) - timedelta(minutes=max(5, lock_ttl_minutes()))).isoformat()
+        try:
+            res = (
+                self.client.table("posts")
+                .update({"status": "publishing", "locked_at": now_iso, "updated_at": now_iso})
+                .eq("id", post_id)
+                .in_("status", ["queued", "scheduled_local", "retry"])
+                .lte("scheduled_at", now_iso)
+                .or_(f"next_retry_at.is.null,next_retry_at.eq.,next_retry_at.lte.{now_iso}")
+                .or_(f"locked_at.is.null,locked_at.eq.,locked_at.lte.{lock_expired}")
+                .execute()
+            )
+            return bool(res.data)
+        except Exception:
+            # Fallback: avoid double-posting if the conditional claim query fails.
+            # The worker will retry later and log the failure path from automation.py.
+            return False
 
     def find_post_by_hash(self, content_hash: str) -> dict[str, Any] | None:
         if not content_hash: return None

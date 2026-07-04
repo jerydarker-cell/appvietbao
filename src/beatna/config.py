@@ -74,3 +74,32 @@ def sensitive_keywords() -> list[str]:
         "trẻ em", "bệnh", "dịch", "bắt giữ", "ma túy", "điều tra", "khởi tố", "lừa đảo",
         "thiên tai", "sạt lở", "bão", "lũ", "chính sách", "phạt", "tranh chấp",
     ]
+
+
+def lock_ttl_minutes() -> int:
+    return as_int("LOCK_TTL_MINUTES", 20)
+
+
+def dry_run_mode() -> bool:
+    """When enabled, Facebook API write calls return fake IDs instead of posting."""
+    return as_bool(secret("DRY_RUN_MODE", False), False)
+
+
+def block_high_risk_posts() -> bool:
+    return as_bool(secret("BLOCK_HIGH_RISK_POSTS", True), True)
+
+
+def max_risk_score_to_publish() -> int:
+    return as_int("MAX_RISK_SCORE_TO_PUBLISH", 64)
+
+
+def min_minutes_between_posts() -> int:
+    return as_int("MIN_MINUTES_BETWEEN_POSTS", 20)
+
+
+def max_post_chars() -> int:
+    return as_int("MAX_POST_CHARS", 1800)
+
+
+def app_version() -> str:
+    return "v9 Secure Ops"

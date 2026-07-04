@@ -172,8 +172,25 @@ def _entry_image(entry) -> str:
     return ""
 
 
-def read_feed(url: str, limit: int = 20) -> list[ArticleInfo]:
-    parsed = feedparser.parse(url)
+def read_feed(url: str, limit: int = 20, timeout: int = 14) -> list[ArticleInfo]:
+    """Read RSS/Atom feed with a real HTTP timeout.
+
+    feedparser.parse(url) can rely on urllib and may hang longer on bad RSS endpoints.
+    Fetching the feed ourselves makes the Streamlit app feel faster and prevents one slow
+    source from blocking the whole dashboard for too long.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 BeatNgheAnPrivateTool/7.0 (+Streamlit private editorial tool)",
+        "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.8",
+        "Accept-Language": "vi,en;q=0.9",
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        parsed = feedparser.parse(resp.content)
+    except Exception:
+        # Fallback keeps compatibility with unusual feed URLs/file-like sources.
+        parsed = feedparser.parse(url)
     source_title = clean_html(getattr(parsed.feed, "title", "")) or domain_name(url)
     items: list[ArticleInfo] = []
     for entry in parsed.entries[:limit]:

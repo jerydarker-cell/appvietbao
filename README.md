@@ -1,41 +1,47 @@
-# Beat Nghệ An AutoPost Pro v5 Ultra Stable
+# Beat Nghệ An AutoPost Pro v9 Secure Ops
 
-Web app Streamlit riêng cho Page **Beat Nghệ An**: quét RSS, chấm điểm tin hot, chống trùng, soạn bài an toàn, kiểm tra chất lượng, lập kế hoạch nội dung, hẹn giờ đăng Facebook Page và lưu dữ liệu vĩnh viễn bằng Supabase.
+Web app Streamlit riêng cho Page **Beat Nghệ An**: nhập tin từ đoạn chat **Beat Nghệ An Hourly**, quét RSS, chống trùng, tạo nháp/sẵn sàng, kiểm tra rủi ro, lập lịch hẹn đăng Facebook Page và lưu dữ liệu vĩnh viễn bằng Supabase.
 
-> Bản v5 tập trung vào vận hành lâu dài: nhanh, mượt, ổn định, có calendar lịch đăng, auto-draft, worker retry, backup đầy đủ và checklist chất lượng trước khi đăng.
+Bản **v9 Secure Ops** giữ toàn bộ chức năng v8 và nâng cấp thêm lớp vận hành an toàn: đăng nhập theo vai trò, dry-run test không đăng thật, cổng rà bài trước khi đăng, backup JSON đầy đủ, kiểm tra Page không lộ token và Facebook API retry ổn định hơn.
 
 ## Tính năng chính
 
-### 1. Nguồn tin & dashboard tin hot
-- Thêm nhiều nguồn RSS.
-- Quét RSS theo lô, cache vào Supabase/SQLite.
-- Chấm điểm tin hot theo từ khóa Nghệ An, Vinh, xã/phường/thôn/bản, dân sinh, cảnh báo, thời tiết, giáo dục, hạ tầng, giá cả.
-- Chống trùng tin bằng `content_hash`.
-- Auto-draft tin hot nhưng vẫn giữ bước duyệt của chủ Page.
+### 1. Nhập tin từ ChatGPT / Beat Nghệ An Hourly
+- Tab **Nhập từ ChatGPT**.
+- Dán nội dung từ đoạn chat Beat Nghệ An Hourly hoặc upload `.txt`, `.json`, `.zip` export.
+- Tự tách nhiều tin, nhận diện tiêu đề, link nguồn, nội dung bài đăng, bình luận nguồn, gợi ý ảnh/link preview.
+- Tạo nháp hoặc bài **Sẵn sàng** hàng loạt.
+- Chống trùng theo link và `content_hash`.
 
-### 2. Soạn bài an toàn cho Beat Nghệ An
-- Tạo bài viết lại bằng lời của Page.
-- Bình luận nguồn ngắn, sạch, có link nguồn.
-- Gợi ý nên dùng link preview hay ảnh tự thiết kế.
-- Kiểm tra rủi ro: thiếu nguồn, giật tít, nhạy cảm, quá dài/quá ngắn.
+### 2. Kết nối Facebook Page an toàn hơn
+- Tab **Kết nối Facebook Page** riêng.
+- Có mật khẩu riêng `PAGE_CONNECT_PASSWORD` hoặc `PAGE_CONNECT_PASSWORD_SHA256`.
+- Token nhập bằng ô password, bị che, không ghi vào GitHub.
+- Có test Page, debug token, xem bài đã hẹn.
+- Ưu tiên Streamlit Secrets để chạy ổn định lâu dài.
 
-### 3. Lịch hẹn đăng bài
+### 3. An toàn & vận hành v9
+- Tab **An toàn & vận hành** mới.
+- Đăng nhập theo vai trò: `ADMIN_PASSWORD`, `EDITOR_PASSWORD`, `VIEWER_PASSWORD` hoặc dạng SHA256.
+- `DRY_RUN_MODE`: test đăng/hẹn giờ không đăng thật lên Facebook.
+- `BLOCK_HIGH_RISK_POSTS`: chặn bài vượt ngưỡng rủi ro trước khi đăng.
+- `MAX_RISK_SCORE_TO_PUBLISH`, `MAX_POST_CHARS` để giảm đăng nhầm bài nhạy cảm/quá dài.
+- Rà hàng loạt bài Ready/Queued và chuyển bài rủi ro về Nháp.
+- Backup JSON đầy đủ: bài viết, nguồn RSS, tin cache, logs.
+
+### 4. Lịch hẹn đăng bài
 - Hẹn Facebook native cho bài link/text.
 - Hàng đợi nội bộ cho worker/app xử lý.
 - Retry lỗi tự động, có log chi tiết.
 - Xếp lịch hàng loạt theo khung giờ.
 - GitHub Actions worker chạy định kỳ mỗi 15 phút.
 
-### 4. V5 Ultra Stable mới
-- Tab **Kế hoạch & chất lượng**.
-- Calendar lịch đăng 3–30 ngày.
-- Kế hoạch nội dung 7 ngày / nhiều ngày theo khung giờ thông minh.
-- Gợi ý khung giờ tránh bài đã hẹn quá sát nhau.
-- Checklist chất lượng hàng loạt cho nháp/sẵn sàng/lỗi.
-- Chuyển bài chất lượng thấp về nháp để sửa.
-- Phát hiện trùng bài theo link, hash và độ giống tiêu đề.
-- Backup JSON đầy đủ: bài viết, nguồn RSS, tin cache, logs.
-- Health-check log để biết app còn chạy ổn.
+### 5. Tốc độ & ổn định
+- RSS có timeout/User-Agent.
+- Facebook API có retry cho lỗi mạng/rate limit tạm thời.
+- SQLite local bật WAL + busy timeout để test mượt hơn.
+- Supabase dùng cho dữ liệu vĩnh viễn khi deploy thật.
+- Health-check và smoke-test có sẵn.
 
 ## Chạy local
 
@@ -54,14 +60,17 @@ streamlit run app.py
 sql/supabase_schema.sql
 ```
 
-Bản v5 tương thích schema v4; nếu đã chạy schema v4 thì không cần tạo lại, chỉ cần deploy code mới.
+Nếu đã chạy schema từ v4/v5/v6/v7/v8 thì bản v9 vẫn tương thích.
 
 ## Secrets Streamlit Cloud
 
 Dán trong **Advanced settings > Secrets**:
 
 ```toml
-APP_PASSWORD = "mat-khau-rieng-cua-ban"
+ADMIN_PASSWORD = "mat-khau-admin"
+EDITOR_PASSWORD = "mat-khau-bien-tap"
+VIEWER_PASSWORD = "mat-khau-chi-xem"
+PAGE_CONNECT_PASSWORD = "mat-khau-rieng-de-mo-ket-noi-page"
 APP_TIMEZONE = "Asia/Bangkok"
 
 STORAGE_BACKEND = "supabase"
@@ -76,41 +85,57 @@ FB_APP_ACCESS_TOKEN = "APP_ID|APP_SECRET"
 OPENAI_API_KEY = ""
 OPENAI_MODEL = "gpt-4.1-mini"
 
+DRY_RUN_MODE = false
+BLOCK_HIGH_RISK_POSTS = true
+MAX_RISK_SCORE_TO_PUBLISH = 64
+MAX_POST_CHARS = 1800
+MIN_MINUTES_BETWEEN_POSTS = 20
+
 AUTO_WORKER_DEFAULT = true
 AUTO_REFRESH_SECONDS = 90
 WORKER_BATCH_LIMIT = 5
 DEFAULT_POST_HOURS = "06:30,11:30,17:30,20:30"
 MIN_SCHEDULE_MINUTES = 12
 MAX_SCHEDULE_DAYS = 30
+LOCK_TTL_MINUTES = 20
 
 RSS_SOURCES = """
 https://example.com/rss
 """
 ```
 
-## GitHub Actions worker
+### Dùng mật khẩu SHA256 thay vì lưu mật khẩu thường
 
-File `.github/workflows/beatna-worker.yml` đã có sẵn. Worker dùng Supabase + Facebook token từ GitHub Secrets để xử lý hàng đợi nội bộ theo lịch.
+```bash
+python scripts/generate_password_hash.py
+```
 
-Nên thêm GitHub Secrets tương ứng:
+Sau đó dán vào Secrets dạng:
 
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `FB_PAGE_ID`
-- `FB_PAGE_ACCESS_TOKEN`
-- `FB_GRAPH_VERSION`
-- `APP_TIMEZONE`
+```toml
+ADMIN_PASSWORD_SHA256 = "hash_o_day"
+PAGE_CONNECT_PASSWORD_SHA256 = "hash_o_day"
+```
 
-## Cách dùng khuyến nghị
+## Cách dùng với Beat Nghệ An Hourly
 
-1. Thêm nguồn RSS.
-2. Quét RSS và lưu cache.
-3. Auto-draft tin hot.
-4. Vào kho bài để sửa/duyệt.
-5. Đánh dấu bài sẵn sàng.
-6. Vào **Kế hoạch & chất lượng** để kiểm tra chất lượng và xem calendar.
-7. Vào **Lịch hẹn đăng bài** để hẹn Facebook native hoặc hàng đợi nội bộ.
+1. Mở đoạn chat **Beat Nghệ An Hourly** trong ChatGPT.
+2. Copy phần tin/bài muốn đăng.
+3. Mở app → tab **Nhập từ ChatGPT**.
+4. Dán nội dung vào ô nhập.
+5. Bấm **Phân tích nội dung ChatGPT**.
+6. Chọn tin đúng → bấm **Tạo nháp** hoặc **Tạo bài Sẵn sàng**.
+7. Sang **An toàn & vận hành** để rà bài.
+8. Sang **Lịch hẹn đăng bài** để hẹn Facebook native hoặc hàng đợi nội bộ.
 
-## Lưu ý an toàn cho Page
+## Kiểm tra trước khi deploy
 
-Không nên để app tự quét rồi đăng ồ ạt 100% không duyệt. Hướng an toàn nhất cho Beat Nghệ An là: app tự quét, tự soạn nháp, tự chống trùng và gợi ý lịch; bạn duyệt nhanh trước khi đăng/hẹn giờ. Không dùng ảnh/video báo nếu chưa có quyền; ưu tiên link preview hoặc ảnh tự thiết kế.
+```bash
+python -m compileall .
+python tests/smoke_test.py
+python scripts/health_check.py
+```
+
+## Lưu ý an toàn
+
+Không thể bảo đảm 100% không lỗi trong mọi tình huống vì còn phụ thuộc Facebook token, quyền Page, Supabase, mạng và API Meta. Bản v9 đã thêm role login, token masking, dry-run, retry, safety gate, backup, log và health-check để giảm rủi ro tối đa khi dùng thật.

@@ -25,12 +25,15 @@ from beatna.automation import (
     schedule_local,
 )
 from beatna.composer import make_ai_post, make_rule_based_post
-from beatna.config import app_timezone, as_bool, as_int, rss_sources, secret
-from beatna.facebook import create_feed_post, create_first_comment, create_photo_post, debug_token, delete_post, get_scheduled_posts, test_connection
+from beatna.config import app_timezone, app_version, as_bool, as_int, dry_run_mode, rss_sources, secret
+from beatna.chatgpt_bridge import ImportedChatItem, imported_to_article, parse_chatgpt_export_bytes, parse_chatgpt_hourly_text, table_rows
+from beatna.facebook import clear_session_credentials, create_feed_post, create_first_comment, create_photo_post, credential_source, debug_token, delete_post, get_scheduled_posts, mask_token, page_status_report, set_session_credentials, test_connection, test_connection_with_credentials
+from beatna.health import health_rows, health_summary, run_health_checks
 from beatna.safety import check_post_safety
 from beatna.scheduler import check_schedule_time, default_slots, human_delta_from_now, iso_to_local_text
 from beatna.planner import analytics_summary, bucket_from_text, calendar_rows, duplicate_groups, make_backup_payload, next_smart_slots, post_quality, quality_table
 from beatna.storage import get_store, storage_warning, utc_now_iso
+from beatna.security import backup_json_bytes, can_admin, can_write, login_role, publish_gate, security_check_rows, secret_matches
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -38,7 +41,7 @@ except Exception:  # pragma: no cover
     st_autorefresh = None
 
 TZ = ZoneInfo(app_timezone())
-st.set_page_config(page_title="Beat Nghệ An AutoPost Pro v5 Ultra Stable", page_icon="📰", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Beat Nghệ An AutoPost Pro v9 Secure Ops", page_icon="📰", layout="wide", initial_sidebar_state="expanded")
 store = get_store()
 
 
@@ -62,21 +65,26 @@ def clean_status(status: str | None) -> str:
 
 
 def require_login() -> bool:
-    app_password = str(secret("APP_PASSWORD", "") or "")
-    if not app_password:
-        st.warning("Chưa đặt APP_PASSWORD. App đang chạy demo; ai có link đều có thể vào.")
+    # v9 supports role passwords. Legacy APP_PASSWORD still works as admin.
+    has_login_secret = any(str(secret(k, "") or "") or str(secret(f"{k}_SHA256", "") or "") for k in ["ADMIN_PASSWORD", "EDITOR_PASSWORD", "VIEWER_PASSWORD", "APP_PASSWORD"])
+    if not has_login_secret:
+        st.warning("Chưa đặt mật khẩu. App đang chạy demo; ai có link đều có thể vào.")
+        st.session_state.setdefault("role", "demo")
         return True
     if st.session_state.get("authed"):
         return True
-    st.title("📰 Beat Nghệ An AutoPost Pro v5 Ultra Stable")
-    st.caption("App riêng để quét tin, soạn bài, lưu Supabase, chống trùng, hẹn giờ và đăng Facebook Page.")
+    st.title("📰 Beat Nghệ An AutoPost Pro v9 Secure Ops")
+    st.caption("App riêng để nhập tin ChatGPT Hourly, quét RSS, soạn bài, kiểm tra rủi ro, lên lịch và đăng Facebook Page an toàn hơn.")
     pw = st.text_input("Mật khẩu app", type="password")
     if st.button("Đăng nhập", type="primary"):
-        if pw == app_password:
+        role = login_role(pw)
+        if role != "none":
             st.session_state["authed"] = True
+            st.session_state["role"] = role
             st.rerun()
         else:
             st.error("Sai mật khẩu.")
+    st.caption("Có thể dùng ADMIN_PASSWORD, EDITOR_PASSWORD, VIEWER_PASSWORD hoặc APP_PASSWORD trong Secrets.")
     return False
 
 
@@ -244,19 +252,24 @@ if not require_login():
     st.stop()
 
 with st.sidebar:
-    st.markdown("### ⚙️ Beat Nghệ An v5 Ultra Stable")
+    st.markdown("### ⚙️ Beat Nghệ An v9 Secure Ops")
     st.write("Kho dữ liệu:", f"**{store.backend_name}**")
     warn = storage_warning()
     if warn:
         st.warning("Supabase chưa dùng được, đang fallback SQLite. " + warn)
-    st.write("Facebook Page:", "✅" if secret("FB_PAGE_ID", "") and secret("FB_PAGE_ACCESS_TOKEN", "") else "❌")
+    fb_status = credential_source()
+    st.write("Facebook Page:", "✅" if fb_status.get("source") != "missing" else "❌")
+    st.caption(f"Kết nối: {fb_status.get('source')} · {fb_status.get('masked_token')}")
+    st.write("Vai trò:", f"**{st.session_state.get('role', 'unknown')}**")
+    if dry_run_mode():
+        st.warning("DRY_RUN_MODE đang bật: test không đăng thật.")
     st.write("AI:", "✅" if secret("OPENAI_API_KEY", "") else "Tắt")
     st.write("Timezone:", app_timezone())
     st.divider()
     auto_worker = st.toggle("Tự xử lý lịch khi app đang mở", value=as_bool(secret("AUTO_WORKER_DEFAULT", True), True))
     refresh_seconds = max(as_int("AUTO_REFRESH_SECONDS", 90), 45)
     if auto_worker and st_autorefresh:
-        st_autorefresh(interval=refresh_seconds * 1000, key="queue_autorefresh_v5")
+        st_autorefresh(interval=refresh_seconds * 1000, key="queue_autorefresh_v9")
         results = publish_due_posts(store, limit=as_int("WORKER_BATCH_LIMIT", 5))
         if results:
             ok = sum(1 for x in results if x.get("ok"))
@@ -266,17 +279,20 @@ with st.sidebar:
     if st.button("Đăng xuất"):
         st.session_state.pop("authed", None); st.rerun()
 
-st.title("📰 Beat Nghệ An AutoPost Pro v5 Ultra Stable")
+st.title("📰 Beat Nghệ An AutoPost Pro v9 Secure Ops")
 st.caption("Quét RSS → chống trùng tin → tự soạn nháp → kiểm tra chất lượng → lên calendar → hẹn giờ Facebook/Page hoặc hàng đợi nội bộ.")
 
-tab_home, tab_hot, tab_compose, tab_schedule, tab_plan, tab_posts, tab_sources, tab_settings = st.tabs([
+tab_home, tab_chatgpt, tab_hot, tab_compose, tab_schedule, tab_plan, tab_posts, tab_sources, tab_connect, tab_ops, tab_settings = st.tabs([
     "Tổng quan",
+    "Nhập từ ChatGPT",
     "Tin hot & Auto-draft",
     "Soạn & đăng",
     "Lịch hẹn đăng bài",
     "Kế hoạch & chất lượng",
     "Kho bài",
     "Nguồn RSS",
+    "Kết nối Facebook Page",
+    "An toàn & vận hành",
     "Cài đặt & kiểm tra",
 ])
 
@@ -310,6 +326,174 @@ with tab_home:
             st.caption(f"{icon} {log.get('created_at')} — {log.get('action')}: {log.get('message')}")
         if not logs:
             st.caption("Chưa có log.")
+
+
+with tab_chatgpt:
+    st.subheader("🤝 Nhập tin từ ChatGPT / Beat Nghệ An Hourly")
+    st.info("App không đọc trực tiếp lịch sử ChatGPT riêng tư của bạn. Cách ổn định nhất là copy nội dung từ đoạn chat Beat Nghệ An Hourly dán vào đây, hoặc tải file export ChatGPT rồi upload. App sẽ tự tách link nguồn, tiêu đề, bài đã soạn, bình luận nguồn và tạo nháp/sẵn sàng.")
+
+    import_mode = st.radio("Cách nhập", ["Dán nội dung từ đoạn chat", "Upload export ChatGPT / file txt-json-zip"], horizontal=True)
+    title_filter = "Beat Nghệ An"
+    raw_text = ""
+    uploaded = None
+    if import_mode == "Dán nội dung từ đoạn chat":
+        raw_text = st.text_area("Dán nguyên đoạn trả lời từ Beat Nghệ An Hourly", height=300, placeholder="Dán các bài/tin có link nguồn ở đây...\nVí dụ: tiêu đề, nội dung bài đăng, bình luận nguồn, link báo")
+    else:
+        c1, c2 = st.columns([1, 1])
+        uploaded = c1.file_uploader("Upload file .txt, .json hoặc .zip export từ ChatGPT", type=["txt", "json", "zip"])
+        title_filter = c2.text_input("Lọc tên cuộc chat khi đọc export", value="Beat Nghệ An")
+        st.caption("Với file export ChatGPT, app sẽ tìm conversations.json và ưu tiên các cuộc chat có tiêu đề chứa cụm lọc này.")
+
+    p1, p2, p3, p4 = st.columns([1, 1, 1, 1])
+    max_items = p1.slider("Tối đa số tin tách", 5, 100, 40)
+    min_conf = p2.slider("Độ tin cậy tối thiểu", 40, 100, 60)
+    use_ai_import = p3.toggle("Khi cần thì dùng AI viết lại", value=bool(secret("OPENAI_API_KEY", "")))
+    default_status = p4.selectbox("Trạng thái khi nhập", ["draft", "ready"], format_func=lambda x: "Nháp" if x == "draft" else "Sẵn sàng")
+
+    if st.button("Phân tích nội dung ChatGPT", type="primary"):
+        try:
+            if import_mode == "Dán nội dung từ đoạn chat":
+                items = parse_chatgpt_hourly_text(raw_text, max_items=max_items)
+            else:
+                if not uploaded:
+                    st.error("Bạn chưa upload file.")
+                    items = []
+                else:
+                    items = parse_chatgpt_export_bytes(uploaded.getvalue(), uploaded.name, title_filter=title_filter)[:max_items]
+            items = [x for x in items if int(x.confidence or 0) >= min_conf]
+            st.session_state["chatgpt_import_items"] = [x.to_dict() for x in items]
+            st.success(f"Đã tách được {len(items)} tin đủ điều kiện.")
+        except Exception as e:
+            st.error(f"Lỗi phân tích: {e}")
+
+    import_items = st.session_state.get("chatgpt_import_items", [])
+    if import_items:
+        st.markdown("#### Tin đã tách từ ChatGPT")
+        st.dataframe(pd.DataFrame(table_rows(import_items)), use_container_width=True, hide_index=True)
+        labels = [f"{i+1}. {x.get('title') or '(không tiêu đề)'} | {x.get('source_url')}" for i, x in enumerate(import_items)]
+        selected_labels = st.multiselect("Chọn tin muốn nhập", labels, default=labels[:min(5, len(labels))])
+        selected_idx = [labels.index(x) for x in selected_labels]
+        selected_items = [import_items[i] for i in selected_idx]
+
+        col_a, col_b, col_c, col_d = st.columns(4)
+        if col_a.button("Đưa 1 tin sang tab Soạn", disabled=not bool(selected_items)):
+            item = ImportedChatItem(**selected_items[0])
+            article = imported_to_article(item)
+            put_article_to_state(article)
+            st.session_state["post_text"] = item.post_text
+            st.session_state["first_comment"] = item.first_comment or f"Nguồn: {item.source_url}"
+            st.session_state["image_note"] = item.image_note
+            st.success("Đã đưa tin đầu tiên sang tab Soạn & đăng.")
+
+        if col_b.button("Chỉ lưu cache tin", disabled=not bool(selected_items)):
+            done = 0
+            for raw in selected_items:
+                item = ImportedChatItem(**raw)
+                article = imported_to_article(item)
+                store.upsert_article(article)
+                done += 1
+            store.add_log(None, "chatgpt_import_cache", True, f"Lưu cache {done} tin từ ChatGPT")
+            st.success(f"Đã lưu cache {done} tin.")
+            st.rerun()
+
+        if col_c.button("Tạo nháp từ tin đã chọn", disabled=not bool(selected_items)):
+            done, reused = 0, 0
+            for raw in selected_items:
+                item = ImportedChatItem(**raw)
+                article = imported_to_article(item)
+                store.upsert_article(article)
+                existing = store.find_post_by_hash(article.content_hash)
+                if existing:
+                    reused += 1
+                    continue
+                if item.post_text:
+                    safety = check_post_safety(item.post_text, item.source_url, item.title, item.summary)
+                    pid = store.add_post(
+                        title=item.title,
+                        source_url=item.source_url,
+                        source_name=item.source_name,
+                        summary=item.summary,
+                        source_image="",
+                        post_text=item.post_text,
+                        first_comment=item.first_comment or f"Nguồn: {item.source_url}",
+                        image_note=item.image_note,
+                        status="draft",
+                        risk_score=safety.score,
+                        risk_level=safety.level,
+                        risk_notes=json.dumps(safety.to_dict(), ensure_ascii=False),
+                        tags="#BeatNgheAn #NgheAn #TinNgheAn",
+                        content_hash=article.content_hash,
+                        priority=int(article.score or 0),
+                        post_type="link" if item.source_url else "text",
+                        extra_json=json.dumps({"import_from": "chatgpt_hourly", "confidence": item.confidence, "note": item.note}, ensure_ascii=False),
+                        publish_channel="facebook_page",
+                    )
+                    store.mark_article_drafted(article.content_hash, pid)
+                else:
+                    pid = create_post_from_article(store, article, status="draft", use_ai=use_ai_import)
+                store.add_log(pid, "chatgpt_import_draft", True, "Tạo nháp từ ChatGPT/Beat Nghệ An Hourly")
+                done += 1
+            st.success(f"Đã tạo {done} nháp. Bỏ qua {reused} tin đã có trong kho.")
+            st.rerun()
+
+        if col_d.button("Tạo bài Sẵn sàng", disabled=not bool(selected_items)):
+            done, reused = 0, 0
+            for raw in selected_items:
+                item = ImportedChatItem(**raw)
+                article = imported_to_article(item)
+                store.upsert_article(article)
+                existing = store.find_post_by_hash(article.content_hash)
+                if existing:
+                    store.update_post(existing["id"], status="ready")
+                    reused += 1
+                    continue
+                if item.post_text:
+                    safety = check_post_safety(item.post_text, item.source_url, item.title, item.summary)
+                    pid = store.add_post(
+                        title=item.title,
+                        source_url=item.source_url,
+                        source_name=item.source_name,
+                        summary=item.summary,
+                        source_image="",
+                        post_text=item.post_text,
+                        first_comment=item.first_comment or f"Nguồn: {item.source_url}",
+                        image_note=item.image_note,
+                        status="ready",
+                        risk_score=safety.score,
+                        risk_level=safety.level,
+                        risk_notes=json.dumps(safety.to_dict(), ensure_ascii=False),
+                        tags="#BeatNgheAn #NgheAn #TinNgheAn",
+                        content_hash=article.content_hash,
+                        priority=int(article.score or 0),
+                        post_type="link" if item.source_url else "text",
+                        extra_json=json.dumps({"import_from": "chatgpt_hourly", "confidence": item.confidence, "note": item.note}, ensure_ascii=False),
+                        publish_channel="facebook_page",
+                    )
+                    store.mark_article_drafted(article.content_hash, pid)
+                else:
+                    pid = create_post_from_article(store, article, status="ready", use_ai=use_ai_import)
+                store.add_log(pid, "chatgpt_import_ready", True, "Tạo bài sẵn sàng từ ChatGPT/Beat Nghệ An Hourly")
+                done += 1
+            st.success(f"Đã tạo {done} bài sẵn sàng. Cập nhật {reused} bài đã có thành Sẵn sàng.")
+            st.rerun()
+
+        with st.expander("Xem trước bài đầu tiên đã chọn"):
+            if selected_items:
+                item = ImportedChatItem(**selected_items[0])
+                st.markdown("**Tiêu đề:** " + item.title)
+                st.code(item.source_url, language=None)
+                st.text_area("Bài đăng", value=item.post_text, height=220, disabled=True)
+                st.text_area("Bình luận nguồn", value=item.first_comment or f"Nguồn: {item.source_url}", height=80, disabled=True)
+                st.text_area("Gợi ý ảnh/link", value=item.image_note, height=80, disabled=True)
+    else:
+        st.caption("Chưa có dữ liệu. Dán nội dung Beat Nghệ An Hourly hoặc upload file export rồi bấm Phân tích.")
+
+    st.divider()
+    st.markdown("#### Cách dùng nhanh")
+    st.write("1. Ở ChatGPT, mở đoạn chat Beat Nghệ An Hourly, copy phần tin bạn muốn dùng.")
+    st.write("2. Dán vào ô trên và bấm Phân tích nội dung ChatGPT.")
+    st.write("3. Chọn các tin đúng, tạo Nháp hoặc Sẵn sàng.")
+    st.write("4. Sang Lịch hẹn đăng bài để xếp lịch Facebook native hoặc hàng đợi nội bộ.")
 
 with tab_hot:
     st.subheader("🔥 Tin hot & Auto-draft")
@@ -735,6 +919,167 @@ with tab_sources:
         else:
             st.caption("Chưa có nguồn lưu trong DB. Bạn có thể cấu hình RSS_SOURCES trong Secrets.")
 
+
+with tab_connect:
+    st.subheader("🔐 Kết nối Facebook Page Beat Nghệ An")
+    st.info("Mục này dùng để kết nối Page riêng trước khi đăng. Cách an toàn nhất khi deploy là lưu Page ID/token trong Streamlit Secrets; cách nhập ở đây chỉ lưu tạm trong phiên làm việc, token bị che và không ghi vào GitHub.")
+
+    status = credential_source()
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Trạng thái", "Đã kết nối" if status.get("source") != "missing" else "Chưa kết nối")
+    s2.metric("Nguồn cấu hình", status.get("source", "missing"))
+    s3.metric("Token", status.get("masked_token", "Chưa có"))
+
+    st.markdown("#### 1) Đăng nhập riêng cho khu kết nối")
+    connect_password = str(secret("PAGE_CONNECT_PASSWORD", "") or secret("PAGE_CONNECT_PASSWORD_SHA256", "") or "")
+    page_connect_unlocked = (not connect_password) or bool(st.session_state.get("page_connect_authed"))
+    if connect_password and not page_connect_unlocked:
+        cpw = st.text_input("Mật khẩu riêng để mở phần kết nối Page", type="password")
+        if st.button("Mở khu kết nối", type="primary"):
+            if secret_matches(cpw, "PAGE_CONNECT_PASSWORD"):
+                st.session_state["page_connect_authed"] = True
+                st.rerun()
+            else:
+                st.error("Sai mật khẩu kết nối Page.")
+        st.caption("Khu nhập token đang khóa. Các tab khác vẫn dùng bình thường.")
+    elif not connect_password:
+        st.warning("Bạn chưa đặt PAGE_CONNECT_PASSWORD. Nên thêm mật khẩu riêng này trong Secrets để bảo vệ khu nhập token.")
+    else:
+        st.success("Đã mở khu kết nối Page trong phiên này.")
+
+    if page_connect_unlocked:
+        st.markdown("#### 2) Nhập Page ID và Page Access Token")
+        st.caption("Token được nhập bằng ô mật khẩu. App chỉ lưu tạm trong st.session_state nếu bạn bấm Lưu tạm phiên; khi app restart sẽ mất. Muốn ổn định lâu dài, hãy dán vào Streamlit Secrets ở mục bên dưới.")
+        fc1, fc2 = st.columns([0.8, 1.4])
+        with fc1:
+            page_id_input = st.text_input("FB_PAGE_ID", value=status.get("page_id") or "", placeholder="ID Page Beat Nghệ An")
+        with fc2:
+            token_input = st.text_input("FB_PAGE_ACCESS_TOKEN", type="password", placeholder="Dán Page Access Token ở đây")
+
+        b1, b2, b3 = st.columns(3)
+        if b1.button("Test token vừa nhập", type="primary", disabled=not bool(page_id_input and token_input)):
+            try:
+                info = test_connection_with_credentials(page_id_input, token_input)
+                st.success(f"Kết nối được Page: {info.get('name')} · ID {info.get('id')}")
+                st.json({"id": info.get("id"), "name": info.get("name"), "link": info.get("link"), "fan_count": info.get("fan_count")})
+            except Exception as e:
+                st.error(f"Chưa kết nối được: {e}")
+        if b2.button("Lưu tạm trong phiên", disabled=not bool(page_id_input and token_input)):
+            try:
+                info = test_connection_with_credentials(page_id_input, token_input)
+                set_session_credentials(page_id_input, token_input)
+                store.add_log(None, "facebook_session_connect", True, f"Kết nối phiên tới Page {info.get('name')} ({info.get('id')})")
+                st.success("Đã lưu tạm trong phiên. Bây giờ các nút đăng/hẹn giờ trong app sẽ dùng token này trước Secrets.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Không lưu vì token chưa test thành công: {e}")
+        if b3.button("Xóa kết nối tạm"):
+            clear_session_credentials()
+            st.session_state.pop("page_connect_authed", None)
+            st.success("Đã xóa kết nối tạm trong phiên.")
+            st.rerun()
+
+        st.markdown("#### 3) Kiểm tra Page đang dùng")
+        c1, c2, c3 = st.columns(3)
+        if c1.button("Test Page đang dùng"):
+            try:
+                st.json(test_connection())
+            except Exception as e:
+                st.error(str(e))
+        if c2.button("Debug token sâu"):
+            try:
+                data = debug_token()
+                st.json(data)
+            except Exception as e:
+                st.error(str(e))
+        if c3.button("Xem bài đã hẹn"):
+            try:
+                rows_sched = get_scheduled_posts(limit=50)
+                st.dataframe(pd.DataFrame(rows_sched), use_container_width=True, hide_index=True) if rows_sched else st.info("Chưa thấy bài hẹn giờ nào từ Facebook.")
+            except Exception as e:
+                st.error(str(e))
+
+        st.markdown("#### 4) Cấu hình Secrets ổn định để deploy")
+        secrets_block = (
+            'APP_PASSWORD = "mat-khau-dang-nhap-app"\n'
+            'PAGE_CONNECT_PASSWORD = "mat-khau-rieng-ket-noi-page"\n'
+            f'FB_PAGE_ID = "{page_id_input or "id_page_beat_nghe_an"}"\n'
+            'FB_PAGE_ACCESS_TOKEN = "PASTE_TOKEN_HERE"\n'
+            'FB_GRAPH_VERSION = "v25.0"\n'
+        )
+        st.code(secrets_block, language="toml")
+        st.caption("Không commit file .streamlit/secrets.toml lên GitHub. Khi deploy Streamlit Cloud, dán phần này vào Advanced settings → Secrets.")
+
+        with st.expander("Checklist lấy token đúng"):
+            st.write("- Token phải là Page Access Token của đúng Page Beat Nghệ An, không phải token linh tinh của app khác.")
+            st.write("- Quyền thường cần: pages_manage_posts, pages_read_engagement, pages_manage_engagement nếu muốn đăng bài và bình luận nguồn bằng Page.")
+            st.write("- Người cấp token phải có quyền quản trị/tác vụ phù hợp trên Page.")
+            st.write("- Token có thể hết hạn hoặc bị thu hồi khi đổi mật khẩu, gỡ quyền app, hoặc Meta thay đổi quyền; khi lỗi thì vào tab này test lại.")
+            st.write("- Tuyệt đối không gửi token cho người khác, không dán token vào bài viết, GitHub public, Facebook comment, hoặc ảnh chụp màn hình.")
+
+with tab_ops:
+    st.subheader("🛡️ An toàn & vận hành")
+    st.info("Mục này giúp kiểm tra bảo mật, bật chế độ test, rà bài rủi ro và xuất backup đầy đủ. Không có hệ thống nào an toàn tuyệt đối, nhưng các lớp này giúp giảm tối đa nguy cơ đăng nhầm, lộ token hoặc mất dữ liệu.")
+
+    o1, o2, o3, o4 = st.columns(4)
+    stats = store.stats(); counts = stats.get("posts_by_status", {})
+    o1.metric("DRY RUN", "BẬT" if dry_run_mode() else "TẮT")
+    o2.metric("Bài lỗi/retry", counts.get("error", 0) + counts.get("retry", 0))
+    o3.metric("Đang hẹn", counts.get("queued", 0) + counts.get("scheduled_local", 0) + counts.get("scheduled_fb", 0))
+    o4.metric("Vai trò", st.session_state.get("role", "unknown"))
+
+    st.markdown("#### Kiểm tra bảo mật cấu hình")
+    st.dataframe(pd.DataFrame(security_check_rows()), use_container_width=True, hide_index=True)
+
+    st.markdown("#### Kiểm tra Page không lộ token")
+    if st.button("Tạo báo cáo trạng thái Page an toàn"):
+        st.json(page_status_report())
+
+    st.markdown("#### Rà bài trước khi đăng")
+    pending = store.list_posts(status="ready", limit=200)
+    queued = store.list_posts(status="queued", limit=200) + store.list_posts(status="scheduled_local", limit=200)
+    rows_gate = []
+    for r in (pending + queued)[:300]:
+        gate = publish_gate(r.get("post_text") or "", r.get("source_url") or "", r.get("title") or "", r.get("summary") or "", r.get("first_comment") or "")
+        rows_gate.append({"ID": r.get("id"), "Trạng thái": clean_status(r.get("status")), "Tiêu đề": r.get("title"), "Kết quả": "OK" if gate.ok else "CHẶN", "Mức": gate.level, "Ghi chú": " | ".join(gate.notes[:3])})
+    if rows_gate:
+        st.dataframe(pd.DataFrame(rows_gate), use_container_width=True, hide_index=True)
+        block_ids = [x["ID"] for x in rows_gate if x["Kết quả"] == "CHẶN"]
+        if block_ids and st.button(f"Chuyển {len(block_ids)} bài bị chặn về Nháp"):
+            for pid in block_ids:
+                store.update_post(pid, status="draft", review_note="v9 safety gate: chuyển về nháp để duyệt lại")
+                store.add_log(pid, "v9_safety_gate", True, "Chuyển về nháp vì không qua cổng an toàn trước khi đăng")
+            st.success("Đã chuyển bài rủi ro về Nháp.")
+            st.rerun()
+    else:
+        st.caption("Chưa có bài Ready/Queued để rà.")
+
+    st.markdown("#### Backup đầy đủ")
+    st.download_button("Tải backup JSON đầy đủ", data=backup_json_bytes(store), file_name="beat_nghe_an_v9_full_backup.json", mime="application/json")
+
+    with st.expander("Secrets gợi ý cho bản v9"):
+        st.code('''ADMIN_PASSWORD = "mat-khau-admin"
+EDITOR_PASSWORD = "mat-khau-bien-tap"
+VIEWER_PASSWORD = "mat-khau-chi-xem"
+PAGE_CONNECT_PASSWORD = "mat-khau-rieng-ket-noi-page"
+
+STORAGE_BACKEND = "supabase"
+SUPABASE_URL = "https://xxx.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY = "service-role-key"
+
+FB_PAGE_ID = "id_page_beat_nghe_an"
+FB_PAGE_ACCESS_TOKEN = "page_access_token"
+FB_GRAPH_VERSION = "v25.0"
+
+DRY_RUN_MODE = false
+BLOCK_HIGH_RISK_POSTS = true
+MAX_RISK_SCORE_TO_PUBLISH = 64
+MAX_POST_CHARS = 1800
+AUTO_WORKER_DEFAULT = true
+AUTO_REFRESH_SECONDS = 90
+WORKER_BATCH_LIMIT = 5''', language="toml")
+
+
 with tab_settings:
     st.subheader("🔌 Cài đặt & kiểm tra")
     col1, col2 = st.columns(2)
@@ -768,6 +1113,19 @@ with tab_settings:
         st.markdown("#### Export dữ liệu")
         st.download_button("Tải kho bài CSV", data=export_csv_bytes(store.export_posts()), file_name="beat_nghe_an_posts_export.csv", mime="text/csv")
         st.download_button("Tải log CSV", data=export_csv_bytes(store.list_logs(limit=1000)), file_name="beat_nghe_an_automation_logs.csv", mime="text/csv")
+
+    st.divider()
+    st.markdown("#### Health check nhanh trước khi deploy")
+    st.caption("Kiểm tra package, timezone, lịch đăng, secrets, Supabase/SQLite và log. Nút này không đăng bài, không gọi Facebook nếu bạn chưa bấm test Page riêng.")
+    if st.button("Chạy kiểm tra hệ thống", type="primary"):
+        checks = run_health_checks(store)
+        summary = health_summary(checks)
+        h1, h2, h3, h4 = st.columns(4)
+        h1.metric("Tổng", summary["total"])
+        h2.metric("OK", summary["ok"])
+        h3.metric("Cảnh báo", summary["warning"])
+        h4.metric("Lỗi", summary["error"])
+        st.dataframe(pd.DataFrame(health_rows(checks)), use_container_width=True, hide_index=True)
 
     st.divider()
     st.markdown("#### Gợi ý chạy nhanh, mượt, ổn định")

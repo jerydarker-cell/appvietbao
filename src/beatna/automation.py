@@ -22,7 +22,11 @@ def publish_due_posts(store: BaseStore, limit: int = 10) -> list[dict[str, Any]]
         post_id = row["id"]
         attempt_count = int(row.get("attempt_count") or 0) + 1
         try:
-            store.update_post(post_id, status="publishing", error="", locked_at=utc_now_iso(), attempt_count=attempt_count, last_attempt_at=utc_now_iso())
+            claim_time = utc_now_iso()
+            if not store.try_claim_post(post_id, claim_time):
+                store.add_log(post_id, "publish_due_skip", True, "Bỏ qua vì bài đã được worker khác khóa/xử lý hoặc chưa đủ điều kiện retry.")
+                continue
+            store.update_post(post_id, error="", attempt_count=attempt_count, last_attempt_at=claim_time)
             fb = create_feed_post(row.get("post_text") or "", link=row.get("source_url") or None)
             fb_id = str(fb.get("id") or "")
             comment_id = ""

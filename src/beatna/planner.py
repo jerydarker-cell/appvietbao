@@ -260,7 +260,7 @@ def analytics_summary(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
 def make_backup_payload(posts: list[dict[str, Any]], sources: list[dict[str, Any]], articles: list[dict[str, Any]], logs: list[dict[str, Any]]) -> bytes:
     payload = {
-        "app": "Beat Nghệ An AutoPost Pro v5 Ultra Stable",
+        "app": "Beat Nghệ An AutoPost Pro v6 ChatGPT Bridge",
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "posts": posts,
         "sources": sources,

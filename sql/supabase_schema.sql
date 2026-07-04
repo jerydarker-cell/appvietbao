@@ -1,4 +1,4 @@
--- Beat Nghệ An AutoPost Pro v5 Ultra Stable
+-- Beat Nghệ An AutoPost Pro v6 ChatGPT Bridge
 -- Chạy trong Supabase > SQL Editor > Run
 
 create extension if not exists pgcrypto;
